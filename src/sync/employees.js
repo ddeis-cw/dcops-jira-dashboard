@@ -9,10 +9,19 @@
 const https = require('https');
 const db    = require('../db');
 
-const HOST     = 'api.atlassian.com';
-const CLOUD_ID = process.env.JIRA_CLOUD_ID   || '0b202827-7a05-4ef3-94f5-056caea69699';
-const WS       = process.env.ASSETS_WORKSPACE || '546fdb12-9ec4-464d-833f-61a727f3a5fb';
-const BASE     = `/ex/jira/${CLOUD_ID}/jsm/assets/workspace/${WS}/v1`;
+const CLOUD_ID  = process.env.JIRA_CLOUD_ID   || '0b202827-7a05-4ef3-94f5-056caea69699';
+const WS        = process.env.ASSETS_WORKSPACE || '546fdb12-9ec4-464d-833f-61a727f3a5fb';
+const TENANT    = 'coreweave.atlassian.net';
+const API_HOST  = 'api.atlassian.com';
+// Basic auth uses the tenant URL directly; OAuth Bearer uses api.atlassian.com
+function getAssetsHost() {
+  return (process.env.JIRA_EMAIL && process.env.JIRA_TOKEN) ? TENANT : API_HOST;
+}
+function getAssetsBase() {
+  return (process.env.JIRA_EMAIL && process.env.JIRA_TOKEN)
+    ? `/jsm/assets/workspace/${WS}/v1`
+    : `/ex/jira/${CLOUD_ID}/jsm/assets/workspace/${WS}/v1`;
+}
 
 const CLIENT_ID     = process.env.ASSETS_CLIENT_ID;
 const CLIENT_SECRET = process.env.ASSETS_CLIENT_SECRET;
@@ -69,8 +78,8 @@ function aqlPost(auth, payload) {
   const body = JSON.stringify(payload);
   return new Promise((resolve) => {
     const req = https.request({
-      hostname: HOST, port: 443,
-      path: `${BASE}/object/aql`, method: 'POST',
+      hostname: getAssetsHost(), port: 443,
+      path: `${getAssetsBase()}/object/aql`, method: 'POST',
       headers: {
         'Accept': 'application/json', 'Content-Type': 'application/json',
         'Authorization': auth, 'Content-Length': Buffer.byteLength(body),
