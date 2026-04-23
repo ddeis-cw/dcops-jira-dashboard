@@ -161,10 +161,9 @@ async function syncTickets(onProgress) {
     // Format cursor for Jira: "2026-04-21T08:00:00.000+0000" → "2026-04-21 08:00"
     const dt = new Date(cursor);
     const jiraDate = dt.toISOString().replace('T', ' ').slice(0, 16);
-    jql = `project IN (${PROJECTS.join(',')}) AND updated >= "${jiraDate}" ORDER BY updated ASC`;
-    console.log(`[sync:tickets] Incremental sync from ${cursor}`);
+    jql = `project IN (${PROJECTS.join(',')}) AND updated >= "${jiraDate}" ORDER BY updated ASC`;    console.log(`[sync:tickets] Incremental sync from ${cursor}`);
   } else {
-    jql = `project IN (${PROJECTS.join(',')}) AND resolved >= -365d ORDER BY updated ASC`;
+    jql = `project IN (${PROJECTS.join(',')}) AND updated >= -365d ORDER BY updated ASC`;
     console.log('[sync:tickets] Full sync (first run)');
   }
 
