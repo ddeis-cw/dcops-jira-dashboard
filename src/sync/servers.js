@@ -106,8 +106,20 @@ function siteFromRack(rack) {
   return m ? m[1] : null;
 }
 
-// ── OAuth token exchange ──────────────────────────────────────────────────────
+// ── Auth: supports Basic (JIRA_TOKEN) or OAuth2 client credentials ───────────
+// Prefers JIRA_EMAIL+JIRA_TOKEN (Basic) as it has full Assets access.
+// Falls back to OAuth2 client credentials if Basic credentials not set.
 function getAccessToken() {
+  const jiraEmail = process.env.JIRA_EMAIL;
+  const jiraToken = process.env.JIRA_TOKEN;
+
+  // Use Basic auth if personal token is available — always has read:cmdb
+  if (jiraEmail && jiraToken) {
+    const basic = 'Basic ' + Buffer.from(jiraEmail + ':' + jiraToken).toString('base64');
+    return Promise.resolve({ type: 'basic', header: basic });
+  }
+
+  // Fall back to OAuth2 client credentials
   return new Promise((resolve, reject) => {
     const body  = 'grant_type=client_credentials';
     const basic = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
@@ -126,7 +138,7 @@ function getAccessToken() {
       res.on('end', () => {
         try {
           const j = JSON.parse(d);
-          if (j.access_token) resolve(j.access_token);
+          if (j.access_token) resolve({ type: 'bearer', header: 'Bearer ' + j.access_token });
           else reject(new Error(`Token exchange: ${j.error_description || d.slice(0, 200)}`));
         } catch(e) { reject(e); }
       });
@@ -139,13 +151,15 @@ function getAccessToken() {
 
 function aqlPost(auth, payload) {
   const body = JSON.stringify(payload);
+  // auth is either { type: 'basic', header: '...' } or { type: 'bearer', header: '...' }
+  const authHeader = typeof auth === 'object' ? auth.header : 'Bearer ' + auth;
   return new Promise(resolve => {
     const req = https.request({
       hostname: HOST, port: 443,
       path: `${BASE}/object/aql`, method: 'POST',
       headers: {
         'Accept': 'application/json', 'Content-Type': 'application/json',
-        'Authorization': `Bearer ${auth}`, 'Content-Length': Buffer.byteLength(body),
+        'Authorization': authHeader, 'Content-Length': Buffer.byteLength(body),
       },
       timeout: 30000,
     }, res => {
@@ -176,7 +190,8 @@ const upsertMany = db.transaction(rows => {
 async function syncServers(onProgress) {
   if (!CLIENT_ID || !CLIENT_SECRET) throw new Error('ASSETS_CLIENT_ID and ASSETS_CLIENT_SECRET are required');
 
-  console.log('[sync:servers] Exchanging credentials...');
+  const useBasic = !!(process.env.JIRA_EMAIL && process.env.JIRA_TOKEN);
+  console.log('[sync:servers] Auth: ' + (useBasic ? 'Basic (JIRA_TOKEN)' : 'OAuth2 client credentials'));
   const token   = await getAccessToken();
   const now     = new Date().toISOString();
 

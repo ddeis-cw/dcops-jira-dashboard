@@ -29,8 +29,13 @@ const RANGE_END   = 882000;
 const CHUNK       = 15;
 const CONCURRENCY = 8;
 
-// ── OAuth token exchange ──────────────────────────────────────────────────────
+// ── Auth: Basic (JIRA_TOKEN) preferred, OAuth2 fallback ──────────────────────
 function getAccessToken() {
+  const jiraEmail = process.env.JIRA_EMAIL;
+  const jiraToken = process.env.JIRA_TOKEN;
+  if (jiraEmail && jiraToken) {
+    return Promise.resolve('Basic ' + Buffer.from(jiraEmail + ':' + jiraToken).toString('base64'));
+  }
   return new Promise((resolve, reject) => {
     const body  = 'grant_type=client_credentials';
     const basic = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
@@ -49,7 +54,7 @@ function getAccessToken() {
       res.on('end', () => {
         try {
           const j = JSON.parse(d);
-          if (j.access_token) resolve(j.access_token);
+          if (j.access_token) resolve('Bearer ' + j.access_token);
           else reject(new Error(`Token exchange failed: ${j.error_description || d.slice(0, 200)}`));
         } catch(e) { reject(e); }
       });
@@ -68,7 +73,7 @@ function aqlPost(auth, payload) {
       path: `${BASE}/object/aql`, method: 'POST',
       headers: {
         'Accept': 'application/json', 'Content-Type': 'application/json',
-        'Authorization': `Bearer ${auth}`, 'Content-Length': Buffer.byteLength(body),
+        'Authorization': auth, 'Content-Length': Buffer.byteLength(body),
       },
       timeout: 30000,
     }, res => {
@@ -106,9 +111,11 @@ const upsertMany = db.transaction(rows => {
 
 // ── Main sync ─────────────────────────────────────────────────────────────────
 async function syncEmployees(onProgress) {
-  if (!CLIENT_ID || !CLIENT_SECRET) throw new Error('ASSETS_CLIENT_ID and ASSETS_CLIENT_SECRET are required');
+  const useBasic = !!(process.env.JIRA_EMAIL && process.env.JIRA_TOKEN);
+  if (!useBasic && (!CLIENT_ID || !CLIENT_SECRET))
+    throw new Error('Either JIRA_EMAIL+JIRA_TOKEN or ASSETS_CLIENT_ID+ASSETS_CLIENT_SECRET required');
 
-  console.log('[sync:employees] Exchanging credentials...');
+  console.log('[sync:employees] Auth: ' + (useBasic ? 'Basic (JIRA_TOKEN)' : 'OAuth2 client credentials'));
   const token     = await getAccessToken();
   const now       = new Date().toISOString();
   const syncedAt  = now;
