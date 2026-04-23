@@ -20,11 +20,13 @@ const CONCURRENCY = 8;
 // Each schema has its own server typeId and attribute IDs.
 // Attribute IDs were discovered via debug-assets.js diagnostics.
 const SCHEMAS = [
-  { id:'10',  name:'coreweave',      serverType:96,  attrRack:'904',  attrActive:'1069', attrRegion:'898',  rangeStart:87000,  rangeEnd:1950000, chunk:100 },
-  { id:'16',  name:'albatross',      serverType:100, attrRack:'943',  attrActive:'953',  attrRegion:'955',  rangeStart:1000,   rangeEnd:350000,  chunk:50  },
-  { id:'20',  name:'eagle',          serverType:118, attrRack:'1102', attrActive:'1112', attrRegion:'1114', rangeStart:1000,   rangeEnd:200000,  chunk:50  },
-  { id:'25',  name:'phoenix',        serverType:135, attrRack:'1242', attrActive:'1252', attrRegion:'1254', rangeStart:1000,   rangeEnd:400000,  chunk:50  },
-  { id:'26',  name:'snipecustomer',  serverType:146, attrRack:'1346', attrActive:'1356', attrRegion:'1358', rangeStart:1000,   rangeEnd:200000,  chunk:50  },
+  // chunk=2000 → 932 chunks for schema 10. AQL cap=25/query, avg density ~88/2000 IDs → safe.
+  // chunk=250 keeps expected results ~22/query, safely under the 25 AQL cap
+  { id:'10',  name:'coreweave',      serverType:96,  attrRack:'904',  attrActive:'1069', attrRegion:'898',  rangeStart:87000, rangeEnd:1950000, chunk:250 },
+  { id:'16',  name:'albatross',      serverType:100, attrRack:'943',  attrActive:'953',  attrRegion:'955',  rangeStart:1000,  rangeEnd:350000,  chunk:100 },
+  { id:'20',  name:'eagle',          serverType:118, attrRack:'1102', attrActive:'1112', attrRegion:'1114', rangeStart:1000,  rangeEnd:200000,  chunk:100 },
+  { id:'25',  name:'phoenix',        serverType:135, attrRack:'1242', attrActive:'1252', attrRegion:'1254', rangeStart:1000,  rangeEnd:400000,  chunk:100 },
+  { id:'26',  name:'snipecustomer',  serverType:146, attrRack:'1346', attrActive:'1356', attrRegion:'1358', rangeStart:1000,  rangeEnd:200000,  chunk:100 },
 ];
 
 const RACK_OVERRIDES = {
