@@ -1,12 +1,13 @@
-# ── Build stage: install deps ─────────────────────────────────────────────────
+# ── Build stage: install deps + compile frontend ──────────────────────────────
 FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
-# Install all deps including devDependencies (needed for esbuild)
+COPY build.js      ./
+# Install all deps (esbuild is a devDependency needed for the build step)
 RUN npm install --no-audit --no-fund
-# Build the frontend bundle
+# Compile frontend JSX → bundle.js
 COPY public/ ./public/
-RUN npm run build
+RUN node build.js
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM node:20-alpine

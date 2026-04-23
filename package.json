@@ -8,7 +8,7 @@
     "dev": "nodemon src/server.js",
     "sync": "node src/sync/index.js",
     "migrate": "node src/migrate.js",
-    "build": "esbuild public/HeadcountPlanning.jsx --bundle --outfile=public/bundle.js --external:react --external:react-dom --external:recharts --format=iife --global-name=DCOPSApp"
+    "build": "node build.js"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.3",
