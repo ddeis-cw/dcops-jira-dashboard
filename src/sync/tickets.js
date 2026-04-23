@@ -107,11 +107,11 @@ const upsertTicket = db.prepare(`
   INSERT OR REPLACE INTO tickets (
     key, project, summary, assignee, assignee_email, reporter,
     status, issue_type, priority, location, maintenance_type,
-    sla_seconds, created_at, updated_at, resolved_at, raw_json
+    sla_seconds, created_at, updated_at, resolved_at
   ) VALUES (
     @key, @project, @summary, @assignee, @assignee_email, @reporter,
     @status, @issue_type, @priority, @location, @maintenance_type,
-    @sla_seconds, @created_at, @updated_at, @resolved_at, @raw_json
+    @sla_seconds, @created_at, @updated_at, @resolved_at
   )
 `);
 
@@ -133,7 +133,7 @@ function mapIssue(issue) {
     created_at:       f.created,
     updated_at:       f.updated,
     resolved_at:      f.resolutiondate || null,
-    raw_json:         JSON.stringify(issue),
+    // raw_json removed — not needed, saves ~1GB of DB space
   };
 }
 
