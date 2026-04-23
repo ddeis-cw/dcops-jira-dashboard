@@ -10,16 +10,12 @@
   <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js" crossorigin></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0f172a; }
   </style>
 </head>
 <body>
   <div id="root"></div>
-
-  <script type="text/babel" data-type="module">
-    import App from '/HeadcountPlanning.jsx';
-    const root = ReactDOM.createRoot(document.getElementById('root'));
-    root.render(React.createElement(App));
-  </script>
+  <!-- /app.jsx is served by Express with export default stripped and mount code appended -->
+  <script type="text/babel" src="/app.jsx"></script>
 </body>
 </html>
