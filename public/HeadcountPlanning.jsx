@@ -2251,40 +2251,40 @@ Jira version: ${d.version || "unknown"}`);
         Object.assign(SERVER_COUNTS, srvData.servers || {});
       }
 
-      // ── Fetch tickets from backend ──
-      setFetchProgress({ done:0, total:null, status:"Fetching tickets from database..." });
-      const ticketRes = await fetch(`${apiBase}/api/tickets`);
-      if (!ticketRes.ok) throw new Error(`Server returned HTTP ${ticketRes.status}`);
-      const ticketData = await ticketRes.json();
-      const allTickets = ticketData.tickets || [];
+      // ── Fetch tickets from backend — paginated to avoid memory crash ──
+      const PAGE_LIMIT = 2000;
+      let allTickets = [];
+      let page = 0;
+      let total = null;
 
-      setFetchProgress({ done: allTickets.length, total: allTickets.length, status:"Processing tickets..." });
+      while (true) {
+        setFetchProgress({ done: allTickets.length, total, status: `Loading tickets from database... ${allTickets.length.toLocaleString()}${total ? " / " + total.toLocaleString() : ""}` });
+        const ticketRes = await fetch(`${apiBase}/api/tickets?page=${page}&limit=${PAGE_LIMIT}`);
+        if (!ticketRes.ok) throw new Error(`Server returned HTTP ${ticketRes.status}`);
+        const ticketData = await ticketRes.json();
+        const batch = ticketData.tickets || [];
+        allTickets = allTickets.concat(batch);
+        total = ticketData.total || null;
+        if (!ticketData.hasMore || batch.length === 0) break;
+        page++;
+      }
 
-      const strField = val => {
-        if (!val) return "";
-        const vals = Array.isArray(val) ? val : [val];
-        const strs = vals.map(v => v?.toString().trim()).filter(Boolean);
-        if (!strs.length) return "";
-        for (const s of strs) { if (canonicalize(s)) return s; }
-        return strs[0];
-      };
+      setFetchProgress({ done: allTickets.length, total: allTickets.length, status: "Processing tickets..." });
 
       const parsed = allTickets.map(ticket => {
-        // Tickets from backend have normalized fields + optional raw Jira payload
-        const f = ticket.raw?.fields || {};
         return normalizeIssue({
-          key:       ticket.key       || "",
-          summary:   ticket.summary   || f.summary || "",
-          assignee:  ticket.assignee  || f.assignee?.displayName || "Unassigned",
-          reporter:  ticket.reporter  || f.reporter?.displayName || "",
-          priority:  ticket.priority  || f.priority?.name        || "Medium",
-          status:    ticket.status    || f.status?.name          || "",
-          issueType: ticket.issue_type || f.issuetype?.name      || "",
-          created:   (ticket.created_at || f.created || "").substring(0, 10),
-          resolved:  ticket.resolved_at || f.resolutiondate || null,
-          location:  ticket.location  || strField(f["customfield_11810"]) || "Unknown",
-          assetDC:   strField(f["customfield_10194"]),
-          sla:       f["customfield_10020"] || null,
+          key:       ticket.key        || "",
+          summary:   ticket.summary    || "",
+          assignee:  ticket.assignee   || "Unassigned",
+          reporter:  ticket.reporter   || "",
+          priority:  ticket.priority   || "Medium",
+          status:    ticket.status     || "",
+          issueType: ticket.issue_type || "",
+          created:   (ticket.created_at || "").substring(0, 10),
+          resolved:  ticket.resolved_at || null,
+          location:  ticket.location   || "Unknown",
+          assetDC:   "",
+          sla:       null,
         });
       }).filter(r => r.key || r.summary);
 

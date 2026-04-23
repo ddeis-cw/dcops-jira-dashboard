@@ -7,22 +7,22 @@ services:
     ports:
       - "${PORT:-3000}:3000"
     volumes:
-      # SQLite database persists outside the container — survives rebuilds
       - ./data:/app/data
     environment:
-      # ── Server ───────────────────────────────────────────────
       PORT: ${PORT:-3000}
       DB_PATH: /app/data/dcops.db
-
-      # ── Jira (tickets) ───────────────────────────────────────
       JIRA_CLOUD_ID: ${JIRA_CLOUD_ID}
       JIRA_EMAIL: ${JIRA_EMAIL}
       JIRA_TOKEN: ${JIRA_TOKEN}
-
-      # ── Jira Assets (employees + servers) ───────────────────
       ASSETS_CLIENT_ID: ${ASSETS_CLIENT_ID}
       ASSETS_CLIENT_SECRET: ${ASSETS_CLIENT_SECRET}
       ASSETS_WORKSPACE: ${ASSETS_WORKSPACE:-546fdb12-9ec4-464d-833f-61a727f3a5fb}
+      # Increase Node heap size for large datasets
+      NODE_OPTIONS: --max-old-space-size=4096
+    deploy:
+      resources:
+        limits:
+          memory: 5g
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/status"]
       interval: 30s
