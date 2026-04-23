@@ -19,8 +19,8 @@ const CLIENT_SECRET = process.env.ASSETS_CLIENT_SECRET;
 
 // Schema 127 config
 const RANGE_START = 589372;
-const RANGE_END   = 950000;
-const CHUNK       = 15;
+const RANGE_END   = 1100000;  // extended: 589372 + 323861 objects + buffer
+const CHUNK       = 25;       // larger chunks = fewer API calls
 const CONCURRENCY = 8;
 
 // Asset attribute IDs (schema 127)
@@ -169,8 +169,9 @@ async function syncServers(onProgress) {
         chunksDone++;
       }));
 
-      if (chunksDone % 100 === 0 || chunksDone === total) {
+      if (chunksDone % 50 === 0 || chunksDone === total) {
         onProgress?.({ done: chunksDone, total, servers: totalActive, status: 'Syncing servers...' });
+        if (chunksDone % 500 === 0) console.log(`[sync:servers] ${chunksDone}/${total} chunks | ${totalActive.toLocaleString()} active servers found`);
       }
     }
 
