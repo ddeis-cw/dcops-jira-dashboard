@@ -2,7 +2,11 @@
 FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
-RUN npm install --omit=dev --no-audit --no-fund
+# Install all deps including devDependencies (needed for esbuild)
+RUN npm install --no-audit --no-fund
+# Build the frontend bundle
+COPY public/ ./public/
+RUN npm run build
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM node:20-alpine
@@ -12,7 +16,10 @@ WORKDIR /app
 RUN apk add --no-cache dumb-init
 
 # Copy dependencies and source
+# Copy only production node_modules
 COPY --from=deps /app/node_modules ./node_modules
+# Copy built frontend bundle
+COPY --from=deps /app/public/bundle.js ./public/bundle.js
 COPY package*.json ./
 COPY src/           ./src/
 COPY migrations/    ./migrations/

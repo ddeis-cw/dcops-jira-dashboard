@@ -1,13 +1,14 @@
 {
   "name": "dcops-jira-dashboard",
   "version": "1.0.0",
-  "description": "DCOPS Jira Dashboard — CoreWeave Data Center Operations",
+  "description": "DCOPS Jira Dashboard \u2014 CoreWeave Data Center Operations",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "sync": "node src/sync/index.js",
-    "migrate": "node src/migrate.js"
+    "migrate": "node src/migrate.js",
+    "build": "esbuild public/HeadcountPlanning.jsx --bundle --outfile=public/bundle.js --external:react --external:react-dom --external:recharts --format=iife --global-name=DCOPSApp"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.3",
@@ -17,7 +18,8 @@
     "node-cron": "^3.0.3"
   },
   "devDependencies": {
-    "nodemon": "^3.1.0"
+    "nodemon": "^3.1.0",
+    "esbuild": "^0.20.2"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -171,22 +171,6 @@ app.get('/api/sync/history', (req, res) => {
   res.json({ history });
 });
 
-// ── Serve JSX dashboard (strips export default, injects mount code) ─────────────
-app.get('/app.jsx', (req, res) => {
-  const jsxPath = path.join(__dirname, '..', 'public', 'HeadcountPlanning.jsx');
-  try {
-    let src = fs.readFileSync(jsxPath, 'utf8');
-    // Strip "export default" so Babel standalone can process as a plain script
-    src = src.replace(/^export default /m, '');
-    // Append mount code
-    src += '\n\nconst __root = ReactDOM.createRoot(document.getElementById("root"));\n__root.render(React.createElement(App));\n';
-    res.setHeader('Content-Type', 'text/babel');
-    res.send(src);
-  } catch(e) {
-    res.status(500).send('// Error loading dashboard: ' + e.message);
-  }
-});
-
 // ── Catch-all: serve React app ────────────────────────────────────────────────
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
