@@ -20,6 +20,13 @@ const db = new Database(DB_PATH);
 // Enable WAL mode for better concurrent read performance
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+// Limit SQLite page cache to 16MB — prevents unbounded memory growth
+db.pragma('cache_size = -16000');
+// Keep temp tables in memory up to 32MB then spill to disk
+db.pragma('temp_store = MEMORY');
+db.pragma('mmap_size = 0');
+db.pragma('cache_size = -32768');  // 32MB cache max
+db.pragma('mmap_size = 0');        // disable memory-mapped I/O
 
 // ── Migration runner ──────────────────────────────────────────────────────────
 function migrate() {

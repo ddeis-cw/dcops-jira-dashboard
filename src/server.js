@@ -53,33 +53,30 @@ app.get('/api/status', (req, res) => {
 });
 
 // ── API: Tickets ──────────────────────────────────────────────────────────────
-// Returns all tickets. Optional query params:
-//   ?since=ISO_DATE  — only tickets updated after this date
-//   ?project=X       — filter by project
+// Paginated — use ?page=0&limit=1000 to walk through all tickets.
+// The dashboard fetches all pages sequentially on load.
 app.get('/api/tickets', (req, res) => {
-  const { since, project } = req.query;
-  let sql    = 'SELECT * FROM tickets WHERE 1=1';
-  const args = [];
+  const { project, page = 0, limit = 2000 } = req.query;
+  const offset = parseInt(page) * parseInt(limit);
 
-  if (since) {
-    sql += ' AND updated_at >= ?';
-    args.push(since);
-  }
+  let countSql = 'SELECT COUNT(*) as n FROM tickets WHERE 1=1';
+  let dataSql  = 'SELECT key, project, summary, assignee, status, issue_type, priority, location, maintenance_type, sla_seconds, created_at, updated_at, resolved_at FROM tickets WHERE 1=1';
+  const args   = [];
+
   if (project) {
-    sql += ' AND project = ?';
+    countSql += ' AND project = ?';
+    dataSql  += ' AND project = ?';
     args.push(project);
   }
 
-  sql += ' ORDER BY created_at DESC';
+  dataSql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
 
   try {
-    const tickets = db.prepare(sql).all(...args);
-    // Parse raw_json back to object for each ticket (dashboard uses full fields)
-    const parsed = tickets.map(t => {
-      try { return { ...t, raw: JSON.parse(t.raw_json) }; }
-      catch(e) { return t; }
-    });
-    res.json({ tickets: parsed, total: parsed.length });
+    const total   = db.prepare(countSql).get(...args).n;
+    const tickets = db.prepare(dataSql).all(...args, parseInt(limit), offset);
+    const hasMore = offset + tickets.length < total;
+
+    res.json({ tickets, total, page: parseInt(page), limit: parseInt(limit), hasMore });
   } catch(e) {
     res.status(500).json({ error: e.message });
   }
@@ -182,20 +179,32 @@ app.listen(PORT, '0.0.0.0', async () => {
   console.log(`  Listening on  http://0.0.0.0:${PORT}`);
   console.log(`  Database      ${process.env.DB_PATH || 'data/dcops.db'}\n`);
 
-  // Start background sync scheduler
-  startScheduler();
+  // Run VACUUM after migrations to reclaim space freed by dropping raw_json
+  console.log('[server] Running VACUUM to reclaim disk space...');
+  db.exec('VACUUM');
+  console.log('[server] VACUUM complete');
 
-  // On first boot, run a full sync if no tickets exist yet
   const ticketCount = db.prepare('SELECT COUNT(*) as n FROM tickets').get().n;
+
   if (ticketCount === 0) {
     console.log('[server] No tickets found — starting initial full sync...');
     console.log('[server] This will take 5-15 minutes on first run.\n');
-    runSync('tickets',   syncTickets).then(() =>
-    runSync('employees', syncEmployees)).then(() =>
-    runSync('servers',   syncServers)).catch(e =>
-      console.error('[server] Initial sync error:', e.message)
-    );
+    // Delay sync start by 2s to let the server fully initialize
+    setTimeout(() => {
+      runSync('tickets',   syncTickets).then(() =>
+      runSync('employees', syncEmployees)).then(() =>
+      runSync('servers',   syncServers)).catch(e =>
+        console.error('[server] Initial sync error:', e.message)
+      );
+    }, 2000);
   } else {
     console.log(`[server] Database loaded — ${ticketCount.toLocaleString()} tickets ready`);
   }
+
+  // Start scheduler with a 5-minute delay so startup completes first
+  setTimeout(() => {
+    startScheduler();
+  }, 5 * 60 * 1000);
+
+  console.log('[server] Ready — scheduler will start in 5 minutes\n');
 });
