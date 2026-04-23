@@ -18,13 +18,14 @@ const CLIENT_ID     = process.env.ASSETS_CLIENT_ID;
 const CLIENT_SECRET = process.env.ASSETS_CLIENT_SECRET;
 
 // Schema 127 config
-const RANGE_START = 589372;
-const RANGE_END   = 1100000;  // extended: 589372 + 323861 objects + buffer
-const CHUNK       = 25;       // larger chunks = fewer API calls
+const RANGE_START = 390000;  // Eagle starts at ~410428, Heron at ~401790 — add buffer
+const RANGE_END   = 1100000;
+const CHUNK       = 25;
 const CONCURRENCY = 8;
 
 // Asset attribute IDs (schema 127)
 const ATTR_RACK   = '2088';  // rack location e.g. "US-WCI01.COL1.R4B19.RU14C"
+const ATTR_REGION = '2084';  // region code e.g. "US-WEST-06", "ORD1" — fallback
 const ATTR_ACTIVE = '2092';  // "true" / "false"
 const ATTR_TYPE   = '2101';  // "server" / "network-device" / etc.
 
@@ -35,8 +36,56 @@ const RACK_OVERRIDES = {
   ORD1: 'US-VO2', ORD3: 'US-WCI', ATL1: 'US-SVG',
   ATL2: 'US-DGV', ATL4: 'US-AAI', AUS1: 'US-AUS',
   DFW1: 'US-PLZ', SBN1: 'US-HMN', LGA1: 'US-WJQ', CMH1: 'US-CMH',
-  'US-EW':  'US-EWS',   // truncated typo in source data
-  'UA-ARQ': 'US-ARQ',   // country-code typo in source data
+  // Region codes from attrId=2084 (Eagle, Heron, Osprey, Phoenix, Snipe assets)
+  'US-WEST-06':   'US-HIO',
+  'US-WEST-06A':  'US-HIO',
+  'US-WEST-03':   'US-HIO',
+  'US-EAST-12':   'US-DNN',
+  'US-EAST-12A':  'US-DNN',
+  'US-CENTRAL-02A':'US-PLZ',
+  'US-CENTRAL-08B':'US-LZL',
+  'US-CENTRAL-05A':'US-RIN',
+  'US-CENTRAL-03A':'US-DTN',
+  'US-CENTRAL-03': 'US-DTN',
+  'US-CENTRAL-04A':'US-PLZ',
+  'US-CENTRAL-08A':'US-LZL',
+  'US-CENTRAL-01A':'US-VO2',
+  'US-CENTRAL-09A':'US-HMN',
+  'US-CENTRAL-05': 'US-RIN',
+  'US-EAST-11A':  'US-ARQ',
+  'US-EAST-04A':  'US-CSZ',
+  'US-EAST-04B':  'US-CSZ',
+  'US-EAST-08A':  'US-CMH',
+  'US-EAST-01A':  'US-OBG',
+  'US-EAST-07A':  'US-LNB',
+  'US-EAST-09A':  'US-SVG',
+  'US-EAST-10':   'US-LOE',
+  'US-EAST-10A':  'US-LOE',
+  'US-WEST-01A':  'US-LAS',
+  'US-WEST-02A':  'US-PHX',
+  'US-WEST-02B':  'US-PHX',
+  'US-NORTH-01A': 'US-SPK',
+  'US-NORTH-01':  'US-SPK',
+  'CA-WEST-01A':  'CA-GAL',
+  'CA-WEST-01':   'CA-GAL',
+  'EU-NORTH-01':  'SE-FAN',
+  'EU-NORTH-01A': 'SE-FAN',
+  'EU-NORTH-02A': 'NO-OVO',
+  'EU-NORTH-02':  'NO-OVO',
+  'EU-NORTH-04A': 'SE-SKH',
+  'EU-NORTH-05A': 'DK-SVL',
+  'EU-WEST-01A':  'GB-PPL',
+  'EU-WEST-01':   'GB-PPL',
+  'EU-WEST-02A':  'GB-CWY',
+  'EU-WEST-02':   'GB-CWY',
+  'EU-SOUTH-01A': 'ES-AVQ',
+  'EU-SOUTH-01':  'ES-AVQ',
+  'EU-SOUTH-02A': 'ES-BCN',
+  'EU-SOUTH-02':  'ES-BCN',
+  'EU-SOUTH-03B': 'ES-BCN',
+  // Typos in source data
+  'US-EW':   'US-EWS',
+  'UA-ARQ':  'US-ARQ',
 };
 
 // Non-DC locations to skip
@@ -155,18 +204,19 @@ async function syncServers(onProgress) {
         });
         if (r.status === 200 && r.body?.values) {
           for (const obj of r.body.values) {
-            let rack = '', active = false, type = '';
+            let rack = '', region = '', active = false, type = '';
             for (const a of (obj.attributes || [])) {
               const id  = String(a.objectTypeAttributeId);
               const val = (a.objectAttributeValues || [])[0];
               const v   = val ? (val.displayValue || val.value || '') : '';
               if (id === ATTR_RACK)   rack   = String(v);
+              if (id === ATTR_REGION) region = String(v);
               if (id === ATTR_ACTIVE) active = String(v).toLowerCase() === 'true';
               if (id === ATTR_TYPE)   type   = String(v).toLowerCase();
             }
             if (type !== 'server' || !active) continue;
             totalActive++;
-            const site = siteFromRack(rack);
+            const site = siteFromRack(rack) || (region ? RACK_OVERRIDES[region.trim()] : null);
             if (site) siteCounts[site] = (siteCounts[site] || 0) + 1;
           }
         }
