@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Environment — NEVER commit credentials
+.env
+
+# Database — large binary, managed as a Docker volume
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Build artifacts
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
