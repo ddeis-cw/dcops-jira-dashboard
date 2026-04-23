@@ -46,6 +46,10 @@ function siteFromRack(rack) {
   if (!rack) return null;
   if (/^\d+\.\d+/.test(rack)) return null;               // IP address
   if (/pallet|broken/i.test(rack)) return null;           // staging
+
+  // Check full string against overrides first (handles bare codes like "UA-ARQ")
+  if (RACK_OVERRIDES[rack.trim()]) return RACK_OVERRIDES[rack.trim()];
+
   const prefix = rack.split('.')[0];
   if (RACK_OVERRIDES[prefix]) return RACK_OVERRIDES[prefix];
   if (SKIP_PREFIXES.has(prefix)) return null;
