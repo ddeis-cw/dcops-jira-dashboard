@@ -20,13 +20,17 @@ const CONCURRENCY = 8;
 // Each schema has its own server typeId and attribute IDs.
 // Attribute IDs were discovered via debug-assets.js diagnostics.
 const SCHEMAS = [
-  // chunk=2000 → 932 chunks for schema 10. AQL cap=25/query, avg density ~88/2000 IDs → safe.
-  // chunk=250 keeps expected results ~22/query, safely under the 25 AQL cap
-  { id:'10',  name:'coreweave',      serverType:96,  attrRack:'904',  attrActive:'1069', attrRegion:'898',  rangeStart:87000, rangeEnd:1950000, chunk:250 },
-  { id:'16',  name:'albatross',      serverType:100, attrRack:'943',  attrActive:'953',  attrRegion:'955',  rangeStart:1000,  rangeEnd:350000,  chunk:100 },
-  { id:'20',  name:'eagle',          serverType:118, attrRack:'1102', attrActive:'1112', attrRegion:'1114', rangeStart:1000,  rangeEnd:200000,  chunk:100 },
-  { id:'25',  name:'phoenix',        serverType:135, attrRack:'1242', attrActive:'1252', attrRegion:'1254', rangeStart:1000,  rangeEnd:400000,  chunk:100 },
-  { id:'26',  name:'snipecustomer',  serverType:146, attrRack:'1346', attrActive:'1356', attrRegion:'1358', rangeStart:1000,  rangeEnd:200000,  chunk:100 },
+  // Attr IDs confirmed via probe output 2026-04-23
+  // schema 10 coreweave:     rack=904,  active=1069, region=898
+  // schema 16 albatross:     rack=938,  active=1072, region=932
+  // schema 20 eagle:         rack=1112, active=1116, region=1108
+  // schema 25 phoenix:       rack=1352, active=1356, region=1349  (ids up to ~1.2M)
+  // schema 26 snipecustomer: rack=1572, active=1575, region=1569
+  { id:'10', name:'coreweave',     serverType:96,  attrRack:'904',  attrActive:'1069', attrRegion:'898',  rangeStart:87000, rangeEnd:1950000, chunk:250  },
+  { id:'16', name:'albatross',     serverType:100, attrRack:'938',  attrActive:'1072', attrRegion:'932',  rangeStart:1000,  rangeEnd:400000,  chunk:100  },
+  { id:'20', name:'eagle',         serverType:118, attrRack:'1112', attrActive:'1116', attrRegion:'1108', rangeStart:1000,  rangeEnd:200000,  chunk:100  },
+  { id:'25', name:'phoenix',       serverType:135, attrRack:'1352', attrActive:'1356', attrRegion:'1349', rangeStart:1000,  rangeEnd:1200000, chunk:250  },
+  { id:'26', name:'snipecustomer', serverType:146, attrRack:'1572', attrActive:'1575', attrRegion:'1569', rangeStart:1000,  rangeEnd:400000,  chunk:100  },
 ];
 
 const RACK_OVERRIDES = {
