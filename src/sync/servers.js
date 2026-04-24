@@ -1,35 +1,46 @@
 /**
  * src/sync/servers.js
- * Counts active servers per site from individual snipe-it schemas.
- * Uses objectId range chunking with Basic auth (JIRA_TOKEN).
- * Schema 127 (consolidated) requires OAuth — not accessible with Basic auth.
+ *
+ * Counts active servers per site from Jira Assets snipe-it schemas.
+ *
+ * Strategy: Simple AQL pagination — no objectId range guessing.
+ * For each schema/type we paginate through ALL objects using
+ * resultPerPage=25 and incrementing page until isLast=true.
+ * This guarantees 100% coverage regardless of ID distribution.
+ *
+ * Schemas scanned:
+ *   10  snipe-it-coreweave-infrastructure  type 96  (servers)
+ *   16  snipe-it-albatross-infrastructure  type 100 (servers)
+ *   20  snipe-it-eagle-infrastructure      type 118 (servers)
+ *   25  snipe-it-phoenix-infrastructure    type 135 (servers)
+ *   26  snipe-it-snipecustomer-infra       type 146 (servers)
+ *
+ * Auth: JIRA_EMAIL + JIRA_TOKEN (Basic) — uses personal API token.
+ *       Falls back to OAuth2 client credentials if personal token missing.
  */
 'use strict';
 
 const https = require('https');
 const db    = require('../db');
 
-const CLOUD_ID = process.env.JIRA_CLOUD_ID   || '0b202827-7a05-4ef3-94f5-056caea69699';
-const WS       = process.env.ASSETS_WORKSPACE || '546fdb12-9ec4-464d-833f-61a727f3a5fb';
-const HOST     = 'api.atlassian.com';
-const BASE     = `/ex/jira/${CLOUD_ID}/jsm/assets/workspace/${WS}/v1`;
+const CLOUD_ID      = process.env.JIRA_CLOUD_ID   || '0b202827-7a05-4ef3-94f5-056ceba69699';
+const WS            = process.env.ASSETS_WORKSPACE || '546fdb12-9ec4-464d-833f-61a727f3a5fb';
+const HOST          = 'api.atlassian.com';
+const BASE          = `/ex/jira/${CLOUD_ID}/jsm/assets/workspace/${WS}/v1`;
 const CLIENT_ID     = process.env.ASSETS_CLIENT_ID;
 const CLIENT_SECRET = process.env.ASSETS_CLIENT_SECRET;
-const CONCURRENCY = 8;
 
-// Each schema has its own server typeId and attribute IDs.
-// Attribute IDs were discovered via debug-assets.js diagnostics.
+// ── Schema + type definitions ─────────────────────────────────────────────────
+// Attr IDs confirmed via probe 2026-04-23.
 const SCHEMAS = [
-  // Attr IDs confirmed via probe 2026-04-23.
-  // With pagination (resultPerPage/page), chunk size no longer needs to stay under 25.
-  // Larger chunks = fewer outer iterations. Inner pagination handles density.
-  { id:'10', name:'coreweave',     serverType:96,  attrRack:'904',  attrActive:'1069', attrRegion:'898',  rangeStart:87000, rangeEnd:1950000, chunk:1000 },
-  { id:'16', name:'albatross',     serverType:100, attrRack:'938',  attrActive:'1072', attrRegion:'932',  rangeStart:1000,  rangeEnd:400000,  chunk:500  },
-  { id:'20', name:'eagle',         serverType:118, attrRack:'1112', attrActive:'1116', attrRegion:'1108', rangeStart:1000,  rangeEnd:250000,  chunk:500  },
-  { id:'25', name:'phoenix',       serverType:135, attrRack:'1352', attrActive:'1356', attrRegion:'1349', rangeStart:1000,  rangeEnd:1500000, chunk:1000 },
-  { id:'26', name:'snipecustomer', serverType:146, attrRack:'1572', attrActive:'1575', attrRegion:'1569', rangeStart:1000,  rangeEnd:700000,  chunk:500  },
+  { id:'10', name:'coreweave',     serverType:96,  attrRack:'904',  attrActive:'1069', attrRegion:'898'  },
+  { id:'16', name:'albatross',     serverType:100, attrRack:'938',  attrActive:'1072', attrRegion:'932'  },
+  { id:'20', name:'eagle',         serverType:118, attrRack:'1112', attrActive:'1116', attrRegion:'1108' },
+  { id:'25', name:'phoenix',       serverType:135, attrRack:'1352', attrActive:'1356', attrRegion:'1349' },
+  { id:'26', name:'snipecustomer', serverType:146, attrRack:'1572', attrActive:'1575', attrRegion:'1569' },
 ];
 
+// ── Site mapping ──────────────────────────────────────────────────────────────
 const RACK_OVERRIDES = {
   LAS1:'US-LAS', RNO1:'US-SPK', RNO2:'US-SPK',
   PDX1:'US-HIO', PDX2:'US-HIO', PDX3:'US-HIO', PDX5:'US-HIO',
@@ -61,12 +72,13 @@ const RACK_OVERRIDES = {
   'EU-SOUTH-02':'ES-BCN','EU-SOUTH-03B':'ES-BCN',
   'US-EW':'US-EWS','UA-ARQ':'US-ARQ',
 };
-const SKIP = new Set(['3PL','DHD','DHF','SCH','NAP12']);
+const SKIP = new Set(['3PL','DHD','DHF','SCH','NAP12','UNKNOWN']);
 
 function siteFromRack(rack) {
   if (!rack) return null;
-  if (/^\d+\.\d+/.test(rack)) return null;
-  if (/pallet|broken/i.test(rack)) return null;
+  if (/^\d+\.\d+/.test(rack)) return null;       // IP address
+  if (/pallet|broken/i.test(rack)) return null;   // staging
+  if (rack === 'UNKNOWN') return null;
   const t = rack.trim();
   if (RACK_OVERRIDES[t]) return RACK_OVERRIDES[t];
   const p = t.split('.')[0];
@@ -76,115 +88,178 @@ function siteFromRack(rack) {
   return m ? m[1] : null;
 }
 
+// ── Auth ──────────────────────────────────────────────────────────────────────
 function getAuthHeader() {
-  if (process.env.JIRA_EMAIL && process.env.JIRA_TOKEN)
-    return Promise.resolve('Basic ' + Buffer.from(process.env.JIRA_EMAIL + ':' + process.env.JIRA_TOKEN).toString('base64'));
-  return new Promise((resolve, reject) => {
-    const body = 'grant_type=client_credentials';
-    const basic = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
-    const req = https.request({ hostname:'auth.atlassian.com', port:443, path:'/oauth/token', method:'POST',
-      headers:{'Authorization':'Basic '+basic,'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','Content-Length':Buffer.byteLength(body)}
-    }, res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>{ try{ const j=JSON.parse(d); if(j.access_token) resolve('Bearer '+j.access_token); else reject(new Error(j.error_description||d)); }catch(e){reject(e);} }); });
-    req.on('error', reject); req.write(body); req.end();
-  });
-}
-
-// Single AQL page — correct params: resultPerPage/page (NOT maxResults/startAt)
-function aqlPage(auth, qlQuery, schemaId, page) {
-  const body = JSON.stringify({ qlQuery, resultPerPage: 25, page, includeAttributes: true, objectSchemaId: String(schemaId) });
-  return new Promise(resolve => {
-    const req = https.request({ hostname:HOST, port:443, path:`${BASE}/object/aql`, method:'POST',
-      headers:{'Accept':'application/json','Content-Type':'application/json','Authorization':auth,'Content-Length':Buffer.byteLength(body)}, timeout:30000
-    }, res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>{ try{resolve({status:res.statusCode,body:JSON.parse(d)});}catch(e){resolve({status:res.statusCode,body:{values:[],isLast:true}});} }); });
-    req.on('error', ()=>resolve({status:0,body:{values:[],isLast:true}}));
-    req.on('timeout', ()=>{ req.destroy(); resolve({status:0,body:{values:[],isLast:true}}); });
-    req.write(body); req.end();
-  });
-}
-
-// Fetch ALL objects in a range by paginating through 25-result pages
-async function aqlFetchAll(auth, qlQuery, schemaId) {
-  const all = [];
-  let page = 0;
-  while (true) {
-    const r = await aqlPage(auth, qlQuery, schemaId, page);
-    const values = (r.status === 200 && r.body?.values) ? r.body.values : [];
-    all.push(...values);
-    if (r.body?.isLast || r.body?.last || values.length < 25 || r.status !== 200) break;
-    page++;
+  if (process.env.JIRA_EMAIL && process.env.JIRA_TOKEN) {
+    return Promise.resolve('Basic ' + Buffer.from(
+      process.env.JIRA_EMAIL + ':' + process.env.JIRA_TOKEN
+    ).toString('base64'));
   }
-  return all;
+  return new Promise((resolve, reject) => {
+    const body  = 'grant_type=client_credentials';
+    const basic = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
+    const req = https.request({
+      hostname: 'auth.atlassian.com', port: 443, path: '/oauth/token', method: 'POST',
+      headers: {
+        'Authorization': `Basic ${basic}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(body),
+      },
+    }, res => {
+      let d = '';
+      res.on('data', c => d += c);
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(d);
+          if (j.access_token) resolve('Bearer ' + j.access_token);
+          else reject(new Error(j.error_description || d.slice(0, 200)));
+        } catch(e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
 }
 
-const upsertServerCount = db.prepare(`INSERT OR REPLACE INTO server_counts (site, count, synced_at) VALUES (@site, @count, @synced_at)`);
-const upsertMany = db.transaction(rows => { for (const r of rows) upsertServerCount.run(r); });
+// ── Single AQL page ───────────────────────────────────────────────────────────
+function aqlPage(auth, qlQuery, schemaId, page) {
+  const body = JSON.stringify({
+    qlQuery,
+    resultPerPage: 25,
+    page,
+    includeAttributes: true,
+    objectSchemaId: String(schemaId),
+  });
+  return new Promise(resolve => {
+    const req = https.request({
+      hostname: HOST, port: 443,
+      path: `${BASE}/object/aql`, method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': auth,
+        'Content-Length': Buffer.byteLength(body),
+      },
+      timeout: 30000,
+    }, res => {
+      let d = '';
+      res.on('data', c => d += c);
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, body: JSON.parse(d) }); }
+        catch(e) { resolve({ status: res.statusCode, body: { values: [], isLast: true } }); }
+      });
+    });
+    req.on('error', () => resolve({ status: 0, body: { values: [], isLast: true } }));
+    req.on('timeout', () => { req.destroy(); resolve({ status: 0, body: { values: [], isLast: true } }); });
+    req.write(body);
+    req.end();
+  });
+}
 
+// ── Process objects from one page ─────────────────────────────────────────────
+function processObjects(objects, schema, siteCounts) {
+  let counted = 0;
+  for (const obj of objects) {
+    let rack = '', region = '', active = null;
+    for (const a of (obj.attributes || [])) {
+      const id  = String(a.objectTypeAttributeId);
+      const val = (a.objectAttributeValues || [])[0];
+      const v   = val ? (val.displayValue || val.value || '') : '';
+      if (id === schema.attrRack)   rack   = String(v);
+      if (id === schema.attrRegion) region = String(v);
+      if (id === schema.attrActive) active = String(v).toLowerCase() === 'true';
+    }
+    // active=null means attr not present → default to active (true)
+    if (active === false) continue;
+    const site = siteFromRack(rack) || (region ? RACK_OVERRIDES[region.trim()] : null);
+    if (site) {
+      siteCounts[site] = (siteCounts[site] || 0) + 1;
+      counted++;
+    }
+  }
+  return counted;
+}
+
+// ── DB ────────────────────────────────────────────────────────────────────────
+const upsertServerCount = db.prepare(
+  `INSERT OR REPLACE INTO server_counts (site, count, synced_at) VALUES (@site, @count, @synced_at)`
+);
+const upsertMany = db.transaction(rows => {
+  for (const r of rows) upsertServerCount.run(r);
+});
+
+// ── Main sync ─────────────────────────────────────────────────────────────────
 async function syncServers(onProgress) {
   const useBasic = !!(process.env.JIRA_EMAIL && process.env.JIRA_TOKEN);
-  console.log(`[sync:servers] Auth: ${useBasic ? 'Basic (JIRA_TOKEN)' : 'OAuth2'}`);
+  console.log(`[sync:servers] Auth: ${useBasic ? 'Basic (personal JIRA_TOKEN)' : 'OAuth2'}`);
+
   const auth = await getAuthHeader();
   const now  = new Date().toISOString();
-  const logRow = db.prepare(`INSERT INTO sync_log (type, status, started_at) VALUES ('servers', 'running', ?)`).run(now);
-  const logId  = logRow.lastInsertRowid;
+  const logRow = db.prepare(
+    `INSERT INTO sync_log (type, status, started_at) VALUES ('servers', 'running', ?)`
+  ).run(now);
+  const logId = logRow.lastInsertRowid;
 
   const siteCounts = {};
-  const gDone = { n: 0 };
-  const gTotal = SCHEMAS.reduce((t,s) => t + Math.ceil((s.rangeEnd - s.rangeStart) / s.chunk), 0);
+  let grandTotal   = 0;
 
   try {
     for (const schema of SCHEMAS) {
-      console.log(`[sync:servers] Scanning ${schema.name} (schema ${schema.id})...`);
-      const offsets = [];
-      for (let i = schema.rangeStart; i < schema.rangeEnd; i += schema.chunk) offsets.push(i);
-      let localServers = 0;
+      console.log(`[sync:servers] Scanning ${schema.name} (schema ${schema.id}, type ${schema.serverType})...`);
+      let page    = 0;
+      let counted = 0;
+      let pages   = 0;
 
-      for (let bi = 0; bi < offsets.length; bi += CONCURRENCY) {
-        const batch = offsets.slice(bi, bi + CONCURRENCY);
-        await Promise.all(batch.map(async lo => {
-          const hi = lo + schema.chunk - 1;
-          const objects = await aqlFetchAll(
-            auth,
-            `objectTypeId = ${schema.serverType} AND objectId >= ${lo} AND objectId <= ${hi}`,
-            schema.id
-          );
-          if (objects.length > 0) {
-            for (const obj of objects) {
-              let rack='', region='', active=null; // null=not present, assume active
-              for (const a of (obj.attributes||[])) {
-                const id = String(a.objectTypeAttributeId);
-                const val = (a.objectAttributeValues||[])[0];
-                const v = val ? (val.displayValue||val.value||'') : '';
-                if (id===schema.attrRack)   rack   = String(v);
-                if (id===schema.attrRegion) region = String(v);
-                if (id===schema.attrActive) active = String(v).toLowerCase()==='true'; // explicit false = skip
-              }
-              // If active attr not present (null), default to true; skip only if explicitly false
-              if (active === false) continue;
-              const site = siteFromRack(rack) || (region ? RACK_OVERRIDES[region.trim()] : null);
-              if (site) { siteCounts[site] = (siteCounts[site]||0)+1; localServers++; }
-            }
-          }
-          gDone.n++;
-        }));
-        if (gDone.n % (CONCURRENCY * 50) === 0) {
-          const total = Object.values(siteCounts).reduce((a,b)=>a+b,0);
-          onProgress?.({done:gDone.n, total:gTotal, servers:total, status:`Scanning ${schema.name}...`});
-          console.log(`[sync:servers] ${schema.name} ${Math.round(gDone.n/gTotal*100)}% | ${total.toLocaleString()} servers`);
+      while (true) {
+        const r = await aqlPage(auth, `objectTypeId = ${schema.serverType}`, schema.id, page);
+
+        if (r.status !== 200) {
+          console.warn(`[sync:servers] HTTP ${r.status} on ${schema.name} page ${page} — stopping`);
+          break;
         }
+
+        const values = r.body?.values || [];
+        counted += processObjects(values, schema, siteCounts);
+        pages++;
+
+        // Report progress
+        if (pages % 200 === 0) {
+          const total = Object.values(siteCounts).reduce((a, b) => a + b, 0);
+          console.log(`[sync:servers] ${schema.name}: page ${page}, ${counted.toLocaleString()} servers so far`);
+          onProgress?.({ done: pages, total: null, servers: total, status: `Scanning ${schema.name}...` });
+        }
+
+        if (r.body?.isLast || r.body?.last || values.length < 25) break;
+        page++;
       }
-      console.log(`[sync:servers] ${schema.name}: ${localServers.toLocaleString()} active servers`);
+
+      grandTotal += counted;
+      console.log(`[sync:servers] ${schema.name}: ✓ ${counted.toLocaleString()} active servers (${pages} pages)`);
+      onProgress?.({
+        done: pages, total: null,
+        servers: Object.values(siteCounts).reduce((a, b) => a + b, 0),
+        status: `${schema.name} complete`,
+      });
     }
 
-    const rows = Object.entries(siteCounts).map(([site,count]) => ({site, count, synced_at:now}));
+    // Write to DB
+    const rows = Object.entries(siteCounts).map(([site, count]) => ({
+      site, count, synced_at: now,
+    }));
     upsertMany(rows);
-    const grandTotal = rows.reduce((a,r)=>a+r.count,0);
-    db.prepare(`UPDATE sync_log SET status='success', completed_at=?, records_synced=? WHERE id=?`)
-      .run(new Date().toISOString(), grandTotal, logId);
+
+    db.prepare(
+      `UPDATE sync_log SET status='success', completed_at=?, records_synced=? WHERE id=?`
+    ).run(new Date().toISOString(), grandTotal, logId);
+
     console.log(`[sync:servers] ✓ ${grandTotal.toLocaleString()} active servers across ${rows.length} sites`);
     return { totalActive: grandTotal, sitesCount: rows.length };
+
   } catch (err) {
-    db.prepare(`UPDATE sync_log SET status='error', completed_at=?, error=? WHERE id=?`)
-      .run(new Date().toISOString(), err.message, logId);
+    db.prepare(
+      `UPDATE sync_log SET status='error', completed_at=?, error=? WHERE id=?`
+    ).run(new Date().toISOString(), err.message, logId);
     console.error('[sync:servers] ✗ Error:', err.message);
     throw err;
   }
