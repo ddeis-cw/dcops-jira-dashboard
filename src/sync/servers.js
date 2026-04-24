@@ -19,8 +19,9 @@ const HOST          = 'api.atlassian.com';
 const BASE          = `/ex/jira/${CLOUD_ID}/jsm/assets/workspace/${WS}/v1`;
 const CLIENT_ID     = process.env.ASSETS_CLIENT_ID;
 const CLIENT_SECRET = process.env.ASSETS_CLIENT_SECRET;
-const CONCURRENCY   = 12;  // parallel page requests per schema
+const CONCURRENCY   = 4;   // conservative — avoids 429 rate limiting
 const PAGE_SIZE     = 25;  // Jira Assets AQL max results per page
+const RETRY_DELAY   = 2000; // ms to wait on 429 before retrying
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
 // Attr IDs confirmed via probe 2026-04-23.
@@ -150,7 +151,22 @@ function aqlPage(auth, schemaId, typeId, page) {
   });
 }
 
-// ── Parse one object into site ────────────────────────────────────────────────
+// ── Single AQL page with retry on 429 ────────────────────────────────────────
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function aqlPageWithRetry(auth, schemaId, typeId, page, retries = 3) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const r = await aqlPage(auth, schemaId, typeId, page);
+    if (r.status === 429) {
+      const wait = RETRY_DELAY * Math.pow(2, attempt); // exponential backoff
+      console.warn(`[sync:servers] Rate limited (429), waiting ${wait}ms before retry ${attempt + 1}/${retries}...`);
+      await sleep(wait);
+      continue;
+    }
+    return r;
+  }
+  return { status: 429, data: { values: [], isLast: true } };
+}
 function objectSite(obj, schema) {
   let rack = '', region = '', active = null;
   for (const a of (obj.attributes || [])) {
@@ -192,7 +208,7 @@ async function syncServers(onProgress) {
       }
 
       // Step 1: Get page 0 to get first batch and check if more pages exist
-      const first = await aqlPage(auth, schema.id, schema.serverType, 0);
+      const first = await aqlPageWithRetry(auth, schema.id, schema.serverType, 0);
       if (first.status !== 200) {
         console.warn(`[sync:servers] ${schema.name}: HTTP ${first.status} — skipping`);
         continue;
@@ -214,9 +230,9 @@ async function syncServers(onProgress) {
 
       // Step 2: Probe higher pages to find total — fetch pages 1,10,100,1000 to bracket range
       let estimatedTotal = 10000; // default estimate
-      const probe = await aqlPage(auth, schema.id, schema.serverType, 999);
+      const probe = await aqlPageWithRetry(auth, schema.id, schema.serverType, 999);
       if (probe.status === 200 && (probe.data?.values || []).length > 0) estimatedTotal = 50000;
-      const probe2 = await aqlPage(auth, schema.id, schema.serverType, 9999);
+      const probe2 = await aqlPageWithRetry(auth, schema.id, schema.serverType, 9999);
       if (probe2.status === 200 && (probe2.data?.values || []).length > 0) estimatedTotal = 500000;
 
       console.log(`[sync:servers] ${schema.name}: multi-page, estimated >${estimatedTotal} objects, fetching concurrently...`);
@@ -233,7 +249,7 @@ async function syncServers(onProgress) {
           batch.push(page++);
         }
 
-        const results = await Promise.all(batch.map(p => aqlPage(auth, schema.id, schema.serverType, p)));
+        const results = await Promise.all(batch.map(p => aqlPageWithRetry(auth, schema.id, schema.serverType, p)));
 
         for (const r of results) {
           const values = (r.status === 200 && r.data?.values) ? r.data.values : [];
@@ -242,11 +258,13 @@ async function syncServers(onProgress) {
             if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
           }
           totalPages++;
-          // Stop if this page was empty or marked last
           if (values.length < PAGE_SIZE || r.data?.isLast || r.data?.last || r.status !== 200) {
             finished = true;
           }
         }
+
+        // Small delay between batches to avoid rate limiting
+        if (!finished) await sleep(200);
 
         // Progress log every 500 pages
         if (totalPages % 500 === 0) {
