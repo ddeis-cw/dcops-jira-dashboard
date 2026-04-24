@@ -164,48 +164,68 @@ async function syncServers(onProgress) {
 
   try {
     for (const schema of SCHEMAS) {
-      // Step 1: Get page 0 to discover total
+      // Step 1: Get page 0 to get first batch and check if more pages exist
       const first = await aqlPage(auth, schema.id, schema.serverType, 0);
       if (first.status !== 200) {
         console.warn(`[sync:servers] ${schema.name}: HTTP ${first.status} — skipping`);
         continue;
       }
-      const total      = first.data.total || 0;
-      const totalPages = Math.ceil(total / PAGE_SIZE);
-      console.log(`[sync:servers] ${schema.name}: ${total.toLocaleString()} objects → ${totalPages} pages`);
 
-      // Process page 0 results
+      const firstValues = first.data?.values || [];
       let counted = 0;
-      for (const obj of (first.data.values || [])) {
+      for (const obj of firstValues) {
         const site = objectSite(obj, schema);
         if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
       }
 
-      // Step 2: Fetch remaining pages concurrently in batches
-      const pages = [];
-      for (let p = 1; p < totalPages; p++) pages.push(p);
+      // If only 1 page, we're done
+      if (first.data?.isLast || first.data?.last || firstValues.length < PAGE_SIZE) {
+        console.log(`[sync:servers] ${schema.name}: ✓ ${counted.toLocaleString()} active servers (1 page)`);
+        grandTotal += counted;
+        continue;
+      }
 
-      let done = 1; // page 0 already done
-      for (let i = 0; i < pages.length; i += CONCURRENCY) {
-        const batch = pages.slice(i, i + CONCURRENCY);
+      // Step 2: Probe higher pages to find total — fetch pages 1,10,100,1000 to bracket range
+      let estimatedTotal = 10000; // default estimate
+      const probe = await aqlPage(auth, schema.id, schema.serverType, 999);
+      if (probe.status === 200 && (probe.data?.values || []).length > 0) estimatedTotal = 50000;
+      const probe2 = await aqlPage(auth, schema.id, schema.serverType, 9999);
+      if (probe2.status === 200 && (probe2.data?.values || []).length > 0) estimatedTotal = 500000;
+
+      console.log(`[sync:servers] ${schema.name}: multi-page, estimated >${estimatedTotal} objects, fetching concurrently...`);
+
+      // Step 3: Fetch pages concurrently using sliding window until we hit an empty/last page
+      let page      = 1;
+      let finished  = false;
+      let totalPages = 0;
+
+      while (!finished) {
+        // Build next batch of page numbers
+        const batch = [];
+        for (let i = 0; i < CONCURRENCY && !finished; i++) {
+          batch.push(page++);
+        }
+
         const results = await Promise.all(batch.map(p => aqlPage(auth, schema.id, schema.serverType, p)));
 
         for (const r of results) {
-          if (r.status === 200) {
-            for (const obj of (r.data.values || [])) {
-              const site = objectSite(obj, schema);
-              if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
-            }
+          const values = (r.status === 200 && r.data?.values) ? r.data.values : [];
+          for (const obj of values) {
+            const site = objectSite(obj, schema);
+            if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
           }
-          done++;
+          totalPages++;
+          // Stop if this page was empty or marked last
+          if (values.length < PAGE_SIZE || r.data?.isLast || r.data?.last || r.status !== 200) {
+            finished = true;
+          }
         }
 
-        // Progress every ~5% of pages
-        if (done % Math.max(1, Math.floor(totalPages / 20)) === 0 || done === totalPages) {
-          const pct     = Math.round(done / totalPages * 100);
+        // Progress log every 500 pages
+        if (totalPages % 500 === 0) {
           const running = Object.values(siteCounts).reduce((a, b) => a + b, 0);
-          console.log(`[sync:servers] ${schema.name}: ${pct}% (${done}/${totalPages} pages, ${counted.toLocaleString()} servers)`);
-          onProgress?.({ done, total: totalPages, servers: running, status: `Scanning ${schema.name}...` });
+          console.log(`[sync:servers] ${schema.name}: ${totalPages} pages done, ${counted.toLocaleString()} servers`);
+          onProgress?.({ done: totalPages, total: null, servers: running, status: `Scanning ${schema.name}...` });
         }
       }
 
