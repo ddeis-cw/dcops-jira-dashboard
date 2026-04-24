@@ -20,17 +20,14 @@ const CONCURRENCY = 8;
 // Each schema has its own server typeId and attribute IDs.
 // Attribute IDs were discovered via debug-assets.js diagnostics.
 const SCHEMAS = [
-  // Attr IDs confirmed via probe 2026-04-23. active defaults to true if attr missing.
-  // schema 10 coreweave:     rack=904,  active=1069, region=898  (type 96=servers)
-  // schema 16 albatross:     rack=938,  active=1072, region=932  (type 100=servers)
-  // schema 20 eagle:         rack=1112, active=1116, region=1108 (type 118=servers)
-  // schema 25 phoenix:       rack=1352, active=1356, region=1349 (type 135=servers, ids up to ~1.5M)
-  // schema 26 snipecustomer: rack=1572, active=1575, region=1569 (type 146=servers, ids up to ~700k)
-  { id:'10', name:'coreweave',     serverType:96,  attrRack:'904',  attrActive:'1069', attrRegion:'898',  rangeStart:87000,  rangeEnd:1950000, chunk:250 },
-  { id:'16', name:'albatross',     serverType:100, attrRack:'938',  attrActive:'1072', attrRegion:'932',  rangeStart:1000,   rangeEnd:400000,  chunk:100 },
-  { id:'20', name:'eagle',         serverType:118, attrRack:'1112', attrActive:'1116', attrRegion:'1108', rangeStart:1000,   rangeEnd:250000,  chunk:100 },
-  { id:'25', name:'phoenix',       serverType:135, attrRack:'1352', attrActive:'1356', attrRegion:'1349', rangeStart:1000,   rangeEnd:1500000, chunk:250 },
-  { id:'26', name:'snipecustomer', serverType:146, attrRack:'1572', attrActive:'1575', attrRegion:'1569', rangeStart:1000,   rangeEnd:700000,  chunk:100 },
+  // Attr IDs confirmed via probe 2026-04-23.
+  // With pagination (resultPerPage/page), chunk size no longer needs to stay under 25.
+  // Larger chunks = fewer outer iterations. Inner pagination handles density.
+  { id:'10', name:'coreweave',     serverType:96,  attrRack:'904',  attrActive:'1069', attrRegion:'898',  rangeStart:87000, rangeEnd:1950000, chunk:1000 },
+  { id:'16', name:'albatross',     serverType:100, attrRack:'938',  attrActive:'1072', attrRegion:'932',  rangeStart:1000,  rangeEnd:400000,  chunk:500  },
+  { id:'20', name:'eagle',         serverType:118, attrRack:'1112', attrActive:'1116', attrRegion:'1108', rangeStart:1000,  rangeEnd:250000,  chunk:500  },
+  { id:'25', name:'phoenix',       serverType:135, attrRack:'1352', attrActive:'1356', attrRegion:'1349', rangeStart:1000,  rangeEnd:1500000, chunk:1000 },
+  { id:'26', name:'snipecustomer', serverType:146, attrRack:'1572', attrActive:'1575', attrRegion:'1569', rangeStart:1000,  rangeEnd:700000,  chunk:500  },
 ];
 
 const RACK_OVERRIDES = {
@@ -92,16 +89,31 @@ function getAuthHeader() {
   });
 }
 
-function aqlPost(auth, payload) {
-  const body = JSON.stringify(payload);
+// Single AQL page — correct params: resultPerPage/page (NOT maxResults/startAt)
+function aqlPage(auth, qlQuery, schemaId, page) {
+  const body = JSON.stringify({ qlQuery, resultPerPage: 25, page, includeAttributes: true, objectSchemaId: String(schemaId) });
   return new Promise(resolve => {
     const req = https.request({ hostname:HOST, port:443, path:`${BASE}/object/aql`, method:'POST',
       headers:{'Accept':'application/json','Content-Type':'application/json','Authorization':auth,'Content-Length':Buffer.byteLength(body)}, timeout:30000
-    }, res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>{ try{resolve({status:res.statusCode,body:JSON.parse(d)});}catch(e){resolve({status:res.statusCode,body:{values:[]}});} }); });
-    req.on('error', ()=>resolve({status:0,body:{values:[]}}));
-    req.on('timeout', ()=>{ req.destroy(); resolve({status:0,body:{values:[]}}); });
+    }, res => { let d=''; res.on('data',c=>d+=c); res.on('end',()=>{ try{resolve({status:res.statusCode,body:JSON.parse(d)});}catch(e){resolve({status:res.statusCode,body:{values:[],isLast:true}});} }); });
+    req.on('error', ()=>resolve({status:0,body:{values:[],isLast:true}}));
+    req.on('timeout', ()=>{ req.destroy(); resolve({status:0,body:{values:[],isLast:true}}); });
     req.write(body); req.end();
   });
+}
+
+// Fetch ALL objects in a range by paginating through 25-result pages
+async function aqlFetchAll(auth, qlQuery, schemaId) {
+  const all = [];
+  let page = 0;
+  while (true) {
+    const r = await aqlPage(auth, qlQuery, schemaId, page);
+    const values = (r.status === 200 && r.body?.values) ? r.body.values : [];
+    all.push(...values);
+    if (r.body?.isLast || r.body?.last || values.length < 25 || r.status !== 200) break;
+    page++;
+  }
+  return all;
 }
 
 const upsertServerCount = db.prepare(`INSERT OR REPLACE INTO server_counts (site, count, synced_at) VALUES (@site, @count, @synced_at)`);
@@ -130,12 +142,13 @@ async function syncServers(onProgress) {
         const batch = offsets.slice(bi, bi + CONCURRENCY);
         await Promise.all(batch.map(async lo => {
           const hi = lo + schema.chunk - 1;
-          const r  = await aqlPost(auth, {
-            qlQuery:`objectTypeId = ${schema.serverType} AND objectId >= ${lo} AND objectId <= ${hi}`,
-            maxResults:25, startAt:0, includeAttributes:true, objectSchemaId:schema.id,
-          });
-          if (r.status === 200 && r.body?.values) {
-            for (const obj of r.body.values) {
+          const objects = await aqlFetchAll(
+            auth,
+            `objectTypeId = ${schema.serverType} AND objectId >= ${lo} AND objectId <= ${hi}`,
+            schema.id
+          );
+          if (objects.length > 0) {
+            for (const obj of objects) {
               let rack='', region='', active=null; // null=not present, assume active
               for (const a of (obj.attributes||[])) {
                 const id = String(a.objectTypeAttributeId);
