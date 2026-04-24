@@ -20,17 +20,17 @@ const CONCURRENCY = 8;
 // Each schema has its own server typeId and attribute IDs.
 // Attribute IDs were discovered via debug-assets.js diagnostics.
 const SCHEMAS = [
-  // Attr IDs confirmed via probe output 2026-04-23
-  // schema 10 coreweave:     rack=904,  active=1069, region=898
-  // schema 16 albatross:     rack=938,  active=1072, region=932
-  // schema 20 eagle:         rack=1112, active=1116, region=1108
-  // schema 25 phoenix:       rack=1352, active=1356, region=1349  (ids up to ~1.2M)
-  // schema 26 snipecustomer: rack=1572, active=1575, region=1569
-  { id:'10', name:'coreweave',     serverType:96,  attrRack:'904',  attrActive:'1069', attrRegion:'898',  rangeStart:87000, rangeEnd:1950000, chunk:250  },
-  { id:'16', name:'albatross',     serverType:100, attrRack:'938',  attrActive:'1072', attrRegion:'932',  rangeStart:1000,  rangeEnd:400000,  chunk:100  },
-  { id:'20', name:'eagle',         serverType:118, attrRack:'1112', attrActive:'1116', attrRegion:'1108', rangeStart:1000,  rangeEnd:200000,  chunk:100  },
-  { id:'25', name:'phoenix',       serverType:135, attrRack:'1352', attrActive:'1356', attrRegion:'1349', rangeStart:1000,  rangeEnd:1200000, chunk:250  },
-  { id:'26', name:'snipecustomer', serverType:146, attrRack:'1572', attrActive:'1575', attrRegion:'1569', rangeStart:1000,  rangeEnd:400000,  chunk:100  },
+  // Attr IDs confirmed via probe 2026-04-23. active defaults to true if attr missing.
+  // schema 10 coreweave:     rack=904,  active=1069, region=898  (type 96=servers)
+  // schema 16 albatross:     rack=938,  active=1072, region=932  (type 100=servers)
+  // schema 20 eagle:         rack=1112, active=1116, region=1108 (type 118=servers)
+  // schema 25 phoenix:       rack=1352, active=1356, region=1349 (type 135=servers, ids up to ~1.5M)
+  // schema 26 snipecustomer: rack=1572, active=1575, region=1569 (type 146=servers, ids up to ~700k)
+  { id:'10', name:'coreweave',     serverType:96,  attrRack:'904',  attrActive:'1069', attrRegion:'898',  rangeStart:87000,  rangeEnd:1950000, chunk:250 },
+  { id:'16', name:'albatross',     serverType:100, attrRack:'938',  attrActive:'1072', attrRegion:'932',  rangeStart:1000,   rangeEnd:400000,  chunk:100 },
+  { id:'20', name:'eagle',         serverType:118, attrRack:'1112', attrActive:'1116', attrRegion:'1108', rangeStart:1000,   rangeEnd:250000,  chunk:100 },
+  { id:'25', name:'phoenix',       serverType:135, attrRack:'1352', attrActive:'1356', attrRegion:'1349', rangeStart:1000,   rangeEnd:1500000, chunk:250 },
+  { id:'26', name:'snipecustomer', serverType:146, attrRack:'1572', attrActive:'1575', attrRegion:'1569', rangeStart:1000,   rangeEnd:700000,  chunk:100 },
 ];
 
 const RACK_OVERRIDES = {
@@ -136,16 +136,17 @@ async function syncServers(onProgress) {
           });
           if (r.status === 200 && r.body?.values) {
             for (const obj of r.body.values) {
-              let rack='', region='', active=false;
+              let rack='', region='', active=null; // null=not present, assume active
               for (const a of (obj.attributes||[])) {
                 const id = String(a.objectTypeAttributeId);
                 const val = (a.objectAttributeValues||[])[0];
                 const v = val ? (val.displayValue||val.value||'') : '';
                 if (id===schema.attrRack)   rack   = String(v);
                 if (id===schema.attrRegion) region = String(v);
-                if (id===schema.attrActive) active = String(v).toLowerCase()==='true';
+                if (id===schema.attrActive) active = String(v).toLowerCase()==='true'; // explicit false = skip
               }
-              if (!active) continue;
+              // If active attr not present (null), default to true; skip only if explicitly false
+              if (active === false) continue;
               const site = siteFromRack(rack) || (region ? RACK_OVERRIDES[region.trim()] : null);
               if (site) { siteCounts[site] = (siteCounts[site]||0)+1; localServers++; }
             }
