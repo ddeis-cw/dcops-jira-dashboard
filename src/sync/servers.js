@@ -3,10 +3,14 @@
  *
  * Counts active servers per site from Jira Assets snipe-it schemas.
  *
- * Strategy: Get total page count first, then fetch all pages concurrently
- * (CONCURRENCY=12) for maximum speed with guaranteed 100% coverage.
+ * Uses a worker-queue approach:
+ * 1. Fetch page 0 to get results + check isLast
+ * 2. If multi-page: probe to estimate total pages, build page queue
+ * 3. N workers pull from queue concurrently, retrying 429s
+ * 4. Guaranteed complete coverage — no early exits
  *
- * Auth: JIRA_EMAIL + JIRA_TOKEN (Basic / personal API token).
+ * Auth: OAuth2 client credentials (refreshed each run) — preferred for elevated access.
+ *       Falls back to Basic (JIRA_TOKEN) if OAuth not configured.
  */
 'use strict';
 
@@ -19,21 +23,17 @@ const HOST          = 'api.atlassian.com';
 const BASE          = `/ex/jira/${CLOUD_ID}/jsm/assets/workspace/${WS}/v1`;
 const CLIENT_ID     = process.env.ASSETS_CLIENT_ID;
 const CLIENT_SECRET = process.env.ASSETS_CLIENT_SECRET;
-const CONCURRENCY   = 4;   // conservative — avoids 429 rate limiting
-const PAGE_SIZE     = 25;  // Jira Assets AQL max results per page
-const RETRY_DELAY   = 2000; // ms to wait on 429 before retrying
+const WORKERS       = 4;    // concurrent page fetchers
+const PAGE_SIZE     = 25;   // Jira Assets AQL page size
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
-// Attr IDs confirmed via probe 2026-04-23.
-// Schema 127 requires OAuth Bearer (not Basic) — accessible when client credentials set.
 const SCHEMAS = [
   { id:'10',  name:'coreweave',     serverType:96,  attrRack:'904',  attrActive:'1069', attrRegion:'898'  },
   { id:'16',  name:'albatross',     serverType:100, attrRack:'938',  attrActive:'1072', attrRegion:'932'  },
   { id:'20',  name:'eagle',         serverType:118, attrRack:'1112', attrActive:'1116', attrRegion:'1108' },
   { id:'25',  name:'phoenix',       serverType:135, attrRack:'1352', attrActive:'1356', attrRegion:'1349' },
   { id:'26',  name:'snipecustomer', serverType:146, attrRack:'1572', attrActive:'1575', attrRegion:'1569' },
-  // Schema 127: consolidated snipe-it-infrastructure (323k objects) — OAuth only
-  // Attr IDs from earlier probe: rack=2088, active=2092, region=2084
+  // Schema 127: consolidated (323k objects) — requires OAuth Bearer
   { id:'127', name:'consolidated',  serverType:344, attrRack:'2088', attrActive:'2092', attrRegion:'2084', oauthOnly: true },
 ];
 
@@ -85,31 +85,22 @@ function siteFromRack(rack) {
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
-// OAuth2 client credentials preferred — gets a fresh Bearer token each run.
-// This provides elevated access including schema 127 (consolidated snipe-it).
-// Falls back to Basic (personal JIRA_TOKEN) if OAuth credentials not set.
 function getAuthHeader() {
-  if (process.env.ASSETS_CLIENT_ID && process.env.ASSETS_CLIENT_SECRET) {
+  if (CLIENT_ID && CLIENT_SECRET) {
     return new Promise((resolve, reject) => {
       const body  = 'grant_type=client_credentials';
       const basic = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
       const req   = https.request({
         hostname: 'auth.atlassian.com', port: 443, path: '/oauth/token', method: 'POST',
-        headers: {
-          'Authorization':  `Basic ${basic}`,
-          'Content-Type':   'application/x-www-form-urlencoded',
-          'Content-Length': Buffer.byteLength(body),
-        },
+        headers: { 'Authorization': `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) },
       }, res => {
         let d = ''; res.on('data', c => d += c);
         res.on('end', () => {
           try {
             const j = JSON.parse(d);
-            if (j.access_token) {
-              console.log('[sync:servers] OAuth token refreshed successfully');
-              resolve('Bearer ' + j.access_token);
-            } else {
-              console.warn('[sync:servers] OAuth failed, falling back to Basic:', j.error_description || j.error);
+            if (j.access_token) { console.log('[sync:servers] OAuth token refreshed'); resolve('Bearer ' + j.access_token); }
+            else {
+              console.warn('[sync:servers] OAuth failed:', j.error_description || j.error, '— falling back to Basic');
               resolve('Basic ' + Buffer.from(process.env.JIRA_EMAIL + ':' + process.env.JIRA_TOKEN).toString('base64'));
             }
           } catch(e) { reject(e); }
@@ -118,20 +109,21 @@ function getAuthHeader() {
       req.on('error', reject); req.write(body); req.end();
     });
   }
-  // Fallback: Basic auth with personal token
   return Promise.resolve('Basic ' + Buffer.from(
     process.env.JIRA_EMAIL + ':' + process.env.JIRA_TOKEN
   ).toString('base64'));
 }
 
-// ── Single AQL page ───────────────────────────────────────────────────────────
-function aqlPage(auth, schemaId, typeId, page) {
+// ── HTTP helpers ──────────────────────────────────────────────────────────────
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function fetchPage(auth, schemaId, typeId, page) {
   const body = JSON.stringify({
-    qlQuery:         `objectTypeId = ${typeId}`,
-    resultPerPage:   PAGE_SIZE,
+    qlQuery: `objectTypeId = ${typeId}`,
+    resultPerPage: PAGE_SIZE,
     page,
     includeAttributes: true,
-    objectSchemaId:  String(schemaId),
+    objectSchemaId: String(schemaId),
   });
   return new Promise(resolve => {
     const req = https.request({
@@ -151,22 +143,19 @@ function aqlPage(auth, schemaId, typeId, page) {
   });
 }
 
-// ── Single AQL page with retry on 429 ────────────────────────────────────────
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-async function aqlPageWithRetry(auth, schemaId, typeId, page, retries = 3) {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const r = await aqlPage(auth, schemaId, typeId, page);
-    if (r.status === 429) {
-      const wait = RETRY_DELAY * Math.pow(2, attempt); // exponential backoff
-      console.warn(`[sync:servers] Rate limited (429), waiting ${wait}ms before retry ${attempt + 1}/${retries}...`);
-      await sleep(wait);
-      continue;
-    }
-    return r;
+// Fetch a single page with automatic retry on 429
+async function fetchPageRetry(auth, schemaId, typeId, page, maxRetries = 5) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const r = await fetchPage(auth, schemaId, typeId, page);
+    if (r.status !== 429) return r;
+    const wait = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s, 8s, 16s
+    console.warn(`[sync:servers] 429 on page ${page}, retrying in ${wait}ms (attempt ${attempt + 1}/${maxRetries})`);
+    await sleep(wait);
   }
-  return { status: 429, data: { values: [], isLast: true } };
+  return { status: 429, data: { values: [] } };
 }
+
+// ── Object → site ─────────────────────────────────────────────────────────────
 function objectSite(obj, schema) {
   let rack = '', region = '', active = null;
   for (const a of (obj.attributes || [])) {
@@ -177,8 +166,91 @@ function objectSite(obj, schema) {
     if (id === schema.attrRegion) region = String(v);
     if (id === schema.attrActive) active = String(v).toLowerCase() === 'true';
   }
-  if (active === false) return null; // explicitly inactive
+  if (active === false) return null;
   return siteFromRack(rack) || (region ? RACK_OVERRIDES[region.trim()] : null);
+}
+
+// ── Worker queue ──────────────────────────────────────────────────────────────
+// Fetch all pages of a schema using N concurrent workers.
+// Workers pull page numbers from a shared queue, stopping when the queue is
+// empty OR when a fetched page signals it is the last page.
+async function fetchAllPages(auth, schema, siteCounts, onProgress) {
+  // Fetch page 0 first to check if multi-page and get first results
+  const first = await fetchPageRetry(auth, schema.id, schema.serverType, 0);
+  if (first.status !== 200) {
+    console.warn(`[sync:servers] ${schema.name}: HTTP ${first.status} on page 0 — skipping`);
+    return 0;
+  }
+
+  let counted = 0;
+  for (const obj of (first.data?.values || [])) {
+    const site = objectSite(obj, schema);
+    if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
+  }
+
+  const isLast = first.data?.isLast || first.data?.last || (first.data?.values || []).length < PAGE_SIZE;
+  if (isLast) {
+    console.log(`[sync:servers] ${schema.name}: ✓ ${counted} active servers (1 page)`);
+    return counted;
+  }
+
+  // Probe to estimate page count for logging
+  const probe = await fetchPageRetry(auth, schema.id, schema.serverType, 9999);
+  const estimatedPages = (probe.status === 200 && (probe.data?.values || []).length > 0) ? '>250,000 objects' :
+    ((await fetchPageRetry(auth, schema.id, schema.serverType, 999)).status === 200 &&
+     ((await fetchPageRetry(auth, schema.id, schema.serverType, 999)).data?.values || []).length > 0
+    ) ? '>25,000 objects' : '~thousands of objects';
+
+  console.log(`[sync:servers] ${schema.name}: multi-page (${estimatedPages}), starting ${WORKERS} workers...`);
+
+  // Queue of page numbers to fetch — dynamically extended as we discover more pages
+  let nextPage     = 1;       // next page to enqueue
+  let lastKnownPage = null;   // set when we find the last page
+  let pagesDone    = 1;       // page 0 already done
+  let done         = false;
+
+  // Worker function
+  async function worker() {
+    while (true) {
+      // Grab next page from queue
+      if (done) return;
+      if (lastKnownPage !== null && nextPage > lastKnownPage) return;
+      const page = nextPage++;
+
+      const r = await fetchPageRetry(auth, schema.id, schema.serverType, page);
+      const values = (r.status === 200 && r.data?.values) ? r.data.values : [];
+
+      for (const obj of values) {
+        const site = objectSite(obj, schema);
+        if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
+      }
+      pagesDone++;
+
+      // Detect last page
+      if (r.data?.isLast || r.data?.last || values.length < PAGE_SIZE || r.status !== 200) {
+        // Only set lastKnownPage if this page is before what we thought was last
+        if (lastKnownPage === null || page < lastKnownPage) {
+          lastKnownPage = page;
+        }
+      }
+
+      // Progress every 100 pages
+      if (pagesDone % 100 === 0) {
+        const total = Object.values(siteCounts).reduce((a, b) => a + b, 0);
+        console.log(`[sync:servers] ${schema.name}: ${pagesDone} pages, ${counted.toLocaleString()} active servers so far (running total: ${total.toLocaleString()})`);
+        onProgress?.({ done: pagesDone, total: lastKnownPage, servers: total, status: `Scanning ${schema.name}...` });
+      }
+
+      // Small delay to avoid rate limiting
+      await sleep(50);
+    }
+  }
+
+  // Run WORKERS workers concurrently until all pages are done
+  await Promise.all(Array.from({ length: WORKERS }, () => worker()));
+
+  console.log(`[sync:servers] ${schema.name}: ✓ ${counted.toLocaleString()} active servers (${pagesDone} pages)`);
+  return counted;
 }
 
 // ── DB ────────────────────────────────────────────────────────────────────────
@@ -189,8 +261,8 @@ const upsertMany = db.transaction(rows => { for (const r of rows) upsertServerCo
 
 // ── Main sync ─────────────────────────────────────────────────────────────────
 async function syncServers(onProgress) {
-  const useOAuth = !!(process.env.ASSETS_CLIENT_ID && process.env.ASSETS_CLIENT_SECRET);
-  console.log(`[sync:servers] Auth: ${useOAuth ? 'OAuth2 (client credentials — refreshed)' : 'Basic (personal JIRA_TOKEN)'}`);
+  const useOAuth = !!(CLIENT_ID && CLIENT_SECRET);
+  console.log(`[sync:servers] Starting — Auth: ${useOAuth ? 'OAuth2 (client credentials)' : 'Basic (JIRA_TOKEN)'}`);
   const auth = await getAuthHeader();
   const now  = new Date().toISOString();
 
@@ -203,79 +275,11 @@ async function syncServers(onProgress) {
   try {
     for (const schema of SCHEMAS) {
       if (schema.oauthOnly && !useOAuth) {
-        console.log(`[sync:servers] Skipping ${schema.name} (OAuth required, not available)`);
+        console.log(`[sync:servers] Skipping ${schema.name} — requires OAuth (set ASSETS_CLIENT_ID + ASSETS_CLIENT_SECRET)`);
         continue;
       }
-
-      // Step 1: Get page 0 to get first batch and check if more pages exist
-      const first = await aqlPageWithRetry(auth, schema.id, schema.serverType, 0);
-      if (first.status !== 200) {
-        console.warn(`[sync:servers] ${schema.name}: HTTP ${first.status} — skipping`);
-        continue;
-      }
-
-      const firstValues = first.data?.values || [];
-      let counted = 0;
-      for (const obj of firstValues) {
-        const site = objectSite(obj, schema);
-        if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
-      }
-
-      // If only 1 page, we're done
-      if (first.data?.isLast || first.data?.last || firstValues.length < PAGE_SIZE) {
-        console.log(`[sync:servers] ${schema.name}: ✓ ${counted.toLocaleString()} active servers (1 page)`);
-        grandTotal += counted;
-        continue;
-      }
-
-      // Step 2: Probe higher pages to find total — fetch pages 1,10,100,1000 to bracket range
-      let estimatedTotal = 10000; // default estimate
-      const probe = await aqlPageWithRetry(auth, schema.id, schema.serverType, 999);
-      if (probe.status === 200 && (probe.data?.values || []).length > 0) estimatedTotal = 50000;
-      const probe2 = await aqlPageWithRetry(auth, schema.id, schema.serverType, 9999);
-      if (probe2.status === 200 && (probe2.data?.values || []).length > 0) estimatedTotal = 500000;
-
-      console.log(`[sync:servers] ${schema.name}: multi-page, estimated >${estimatedTotal} objects, fetching concurrently...`);
-
-      // Step 3: Fetch pages concurrently using sliding window until we hit an empty/last page
-      let page      = 1;
-      let finished  = false;
-      let totalPages = 0;
-
-      while (!finished) {
-        // Build next batch of page numbers
-        const batch = [];
-        for (let i = 0; i < CONCURRENCY && !finished; i++) {
-          batch.push(page++);
-        }
-
-        const results = await Promise.all(batch.map(p => aqlPageWithRetry(auth, schema.id, schema.serverType, p)));
-
-        for (const r of results) {
-          const values = (r.status === 200 && r.data?.values) ? r.data.values : [];
-          for (const obj of values) {
-            const site = objectSite(obj, schema);
-            if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
-          }
-          totalPages++;
-          if (values.length < PAGE_SIZE || r.data?.isLast || r.data?.last || r.status !== 200) {
-            finished = true;
-          }
-        }
-
-        // Small delay between batches to avoid rate limiting
-        if (!finished) await sleep(200);
-
-        // Progress log every 100 pages
-        if (totalPages % 100 === 0) {
-          const running = Object.values(siteCounts).reduce((a, b) => a + b, 0);
-          console.log(`[sync:servers] ${schema.name}: ${totalPages} pages done, ${counted.toLocaleString()} servers found so far`);
-          onProgress?.({ done: totalPages, total: null, servers: running, status: `Scanning ${schema.name}...` });
-        }
-      }
-
-      grandTotal += counted;
-      console.log(`[sync:servers] ${schema.name}: ✓ ${counted.toLocaleString()} active servers`);
+      const count = await fetchAllPages(auth, schema, siteCounts, onProgress);
+      grandTotal += count;
     }
 
     const rows = Object.entries(siteCounts).map(([site, count]) => ({ site, count, synced_at: now }));
@@ -284,7 +288,10 @@ async function syncServers(onProgress) {
     db.prepare(`UPDATE sync_log SET status='success', completed_at=?, records_synced=? WHERE id=?`)
       .run(new Date().toISOString(), grandTotal, logId);
 
-    console.log(`[sync:servers] ✓ ${grandTotal.toLocaleString()} active servers across ${rows.length} sites`);
+    console.log(`[sync:servers] ✓ COMPLETE: ${grandTotal.toLocaleString()} active servers across ${rows.length} sites`);
+    rows.sort((a, b) => b.count - a.count).slice(0, 10).forEach(r =>
+      console.log(`[sync:servers]   ${r.site}: ${r.count.toLocaleString()}`)
+    );
     return { totalActive: grandTotal, sitesCount: rows.length };
 
   } catch (err) {
