@@ -23,12 +23,17 @@ const CONCURRENCY   = 12;  // parallel page requests per schema
 const PAGE_SIZE     = 25;  // Jira Assets AQL max results per page
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
+// Attr IDs confirmed via probe 2026-04-23.
+// Schema 127 requires OAuth Bearer (not Basic) — accessible when client credentials set.
 const SCHEMAS = [
-  { id:'10', name:'coreweave',     serverType:96,  attrRack:'904',  attrActive:'1069', attrRegion:'898'  },
-  { id:'16', name:'albatross',     serverType:100, attrRack:'938',  attrActive:'1072', attrRegion:'932'  },
-  { id:'20', name:'eagle',         serverType:118, attrRack:'1112', attrActive:'1116', attrRegion:'1108' },
-  { id:'25', name:'phoenix',       serverType:135, attrRack:'1352', attrActive:'1356', attrRegion:'1349' },
-  { id:'26', name:'snipecustomer', serverType:146, attrRack:'1572', attrActive:'1575', attrRegion:'1569' },
+  { id:'10',  name:'coreweave',     serverType:96,  attrRack:'904',  attrActive:'1069', attrRegion:'898'  },
+  { id:'16',  name:'albatross',     serverType:100, attrRack:'938',  attrActive:'1072', attrRegion:'932'  },
+  { id:'20',  name:'eagle',         serverType:118, attrRack:'1112', attrActive:'1116', attrRegion:'1108' },
+  { id:'25',  name:'phoenix',       serverType:135, attrRack:'1352', attrActive:'1356', attrRegion:'1349' },
+  { id:'26',  name:'snipecustomer', serverType:146, attrRack:'1572', attrActive:'1575', attrRegion:'1569' },
+  // Schema 127: consolidated snipe-it-infrastructure (323k objects) — OAuth only
+  // Attr IDs from earlier probe: rack=2088, active=2092, region=2084
+  { id:'127', name:'consolidated',  serverType:344, attrRack:'2088', attrActive:'2092', attrRegion:'2084', oauthOnly: true },
 ];
 
 // ── Site mapping ──────────────────────────────────────────────────────────────
@@ -79,26 +84,43 @@ function siteFromRack(rack) {
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
+// OAuth2 client credentials preferred — gets a fresh Bearer token each run.
+// This provides elevated access including schema 127 (consolidated snipe-it).
+// Falls back to Basic (personal JIRA_TOKEN) if OAuth credentials not set.
 function getAuthHeader() {
-  if (process.env.JIRA_EMAIL && process.env.JIRA_TOKEN)
-    return Promise.resolve('Basic ' + Buffer.from(
-      process.env.JIRA_EMAIL + ':' + process.env.JIRA_TOKEN
-    ).toString('base64'));
-  return new Promise((resolve, reject) => {
-    const body  = 'grant_type=client_credentials';
-    const basic = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
-    const req   = https.request({
-      hostname: 'auth.atlassian.com', port: 443, path: '/oauth/token', method: 'POST',
-      headers: { 'Authorization': `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) },
-    }, res => {
-      let d = ''; res.on('data', c => d += c);
-      res.on('end', () => {
-        try { const j = JSON.parse(d); if (j.access_token) resolve('Bearer ' + j.access_token); else reject(new Error(j.error_description || d)); }
-        catch(e) { reject(e); }
+  if (process.env.ASSETS_CLIENT_ID && process.env.ASSETS_CLIENT_SECRET) {
+    return new Promise((resolve, reject) => {
+      const body  = 'grant_type=client_credentials';
+      const basic = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
+      const req   = https.request({
+        hostname: 'auth.atlassian.com', port: 443, path: '/oauth/token', method: 'POST',
+        headers: {
+          'Authorization':  `Basic ${basic}`,
+          'Content-Type':   'application/x-www-form-urlencoded',
+          'Content-Length': Buffer.byteLength(body),
+        },
+      }, res => {
+        let d = ''; res.on('data', c => d += c);
+        res.on('end', () => {
+          try {
+            const j = JSON.parse(d);
+            if (j.access_token) {
+              console.log('[sync:servers] OAuth token refreshed successfully');
+              resolve('Bearer ' + j.access_token);
+            } else {
+              console.warn('[sync:servers] OAuth failed, falling back to Basic:', j.error_description || j.error);
+              resolve('Basic ' + Buffer.from(process.env.JIRA_EMAIL + ':' + process.env.JIRA_TOKEN).toString('base64'));
+            }
+          } catch(e) { reject(e); }
+        });
       });
+      req.on('error', reject); req.write(body); req.end();
     });
-    req.on('error', reject); req.write(body); req.end();
-  });
+  }
+  // Fallback: Basic auth with personal token
+  return Promise.resolve('Basic ' + Buffer.from(
+    process.env.JIRA_EMAIL + ':' + process.env.JIRA_TOKEN
+  ).toString('base64'));
 }
 
 // ── Single AQL page ───────────────────────────────────────────────────────────
@@ -151,8 +173,8 @@ const upsertMany = db.transaction(rows => { for (const r of rows) upsertServerCo
 
 // ── Main sync ─────────────────────────────────────────────────────────────────
 async function syncServers(onProgress) {
-  const useBasic = !!(process.env.JIRA_EMAIL && process.env.JIRA_TOKEN);
-  console.log(`[sync:servers] Auth: ${useBasic ? 'Basic (personal JIRA_TOKEN)' : 'OAuth2'}`);
+  const useOAuth = !!(process.env.ASSETS_CLIENT_ID && process.env.ASSETS_CLIENT_SECRET);
+  console.log(`[sync:servers] Auth: ${useOAuth ? 'OAuth2 (client credentials — refreshed)' : 'Basic (personal JIRA_TOKEN)'}`);
   const auth = await getAuthHeader();
   const now  = new Date().toISOString();
 
@@ -164,6 +186,11 @@ async function syncServers(onProgress) {
 
   try {
     for (const schema of SCHEMAS) {
+      if (schema.oauthOnly && !useOAuth) {
+        console.log(`[sync:servers] Skipping ${schema.name} (OAuth required, not available)`);
+        continue;
+      }
+
       // Step 1: Get page 0 to get first batch and check if more pages exist
       const first = await aqlPage(auth, schema.id, schema.serverType, 0);
       if (first.status !== 200) {
