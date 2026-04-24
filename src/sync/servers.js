@@ -266,10 +266,10 @@ async function syncServers(onProgress) {
         // Small delay between batches to avoid rate limiting
         if (!finished) await sleep(200);
 
-        // Progress log every 500 pages
-        if (totalPages % 500 === 0) {
+        // Progress log every 100 pages
+        if (totalPages % 100 === 0) {
           const running = Object.values(siteCounts).reduce((a, b) => a + b, 0);
-          console.log(`[sync:servers] ${schema.name}: ${totalPages} pages done, ${counted.toLocaleString()} servers`);
+          console.log(`[sync:servers] ${schema.name}: ${totalPages} pages done, ${counted.toLocaleString()} servers found so far`);
           onProgress?.({ done: totalPages, total: null, servers: running, status: `Scanning ${schema.name}...` });
         }
       }
