@@ -137,7 +137,7 @@ function getTotalCount(auth, schemaId, typeId) {
       res.on('end', () => {
         try {
           const j = JSON.parse(d);
-          resolve(j.count || j.total || 0);
+          resolve(j.totalCount || j.count || j.total || 0);
         } catch(e) { resolve(0); }
       });
     });
