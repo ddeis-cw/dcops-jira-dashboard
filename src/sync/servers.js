@@ -1,26 +1,26 @@
 /**
  * src/sync/servers.js
  *
- * Counts ACTIVE SERVERS per site from Jira Assets.
+ * ARCHITECTURE (confirmed 2026-04-24):
  *
- * Architecture (confirmed 2026-04-24):
+ * From schema 127 via OAuth — types with servers (attrType=2101="server"):
+ *   Type 344 = CoreWeave internal
+ *   Type 347 = Osprey customer
+ *   Type 349 = Snipe/Heron customer
  *
- * Schema 127 (consolidated, OAuth required) — filter attrId=2101 = "server":
- *   Type 344 = CoreWeave internal servers        (100% server in schema 127)
- *   Type 347 = Osprey customer servers           (mixed, filter to server only)
- *   Type 349 = Snipe/Heron customer servers      (mixed, filter to server only)
+ * From individual schemas via Basic auth — no servers in schema 127:
+ *   Schema 16 type 100 = Albatross
+ *   Schema 20 type 118 = Eagle
+ *   Schema 25 type 135 = Phoenix
  *
- * Individual schemas (Basic auth) — no servers in schema 127 for these:
- *   Schema 16 type 100 = Albatross servers       (100% network-device in 127)
- *   Schema 20 type 118 = Eagle servers           (100% network-device in 127)
- *   Schema 25 type 135 = Phoenix servers         (100% CDU in 127)
+ * CRITICAL API NOTE:
+ *   POST /object/aql does NOT support pagination — always returns same 25 objects.
+ *   Must use deprecated GET /aql/objects which has working page+resultPerPage params.
+ *   GET /aql/objects still functional as of Jan 2026 despite deprecation notice.
+ *   Use POST /object/aql/totalcount first to get exact page count.
  *
- * Zero double-counting — each server exists in exactly one source above.
- * Filter: attrId=2101 = "server" enforced on all types.
- * Active: attrId=active defaults to true if attr missing (some objects lack it).
- *
- * Auth: OAuth2 client credentials (refreshed each run) for schema 127.
- *       Basic (JIRA_TOKEN) for individual schemas 16/20/25.
+ * Auth: OAuth2 (fresh token per source) for schema 127.
+ *       Basic (JIRA_TOKEN) for schemas 16/20/25.
  */
 'use strict';
 
@@ -33,26 +33,19 @@ const HOST          = 'api.atlassian.com';
 const BASE          = `/ex/jira/${CLOUD_ID}/jsm/assets/workspace/${WS}/v1`;
 const CLIENT_ID     = process.env.ASSETS_CLIENT_ID;
 const CLIENT_SECRET = process.env.ASSETS_CLIENT_SECRET;
-const WORKERS       = 4;    // concurrent page fetchers per schema
-const PAGE_SIZE     = 25;   // Jira Assets AQL page size
+const PAGE_SIZE     = 25;
+const CONCURRENCY   = 6;
 
-// ── Source definitions ────────────────────────────────────────────────────────
-const SOURCES_OAUTH = [
-  // Schema 127 — consolidated. Requires OAuth Bearer.
-  // attrRack=2088, attrActive=2092, attrRegion=2084, attrType=2101
-  { schema:'127', name:'CoreWeave (127)',      typeId:344, attrRack:'2088', attrActive:'2092', attrRegion:'2084', attrType:'2101' },
-  { schema:'127', name:'Osprey (127)',         typeId:347, attrRack:'2088', attrActive:'2092', attrRegion:'2084', attrType:'2101' },
-  { schema:'127', name:'Snipe/Heron (127)',    typeId:349, attrRack:'2088', attrActive:'2092', attrRegion:'2084', attrType:'2101' },
-];
-
-const SOURCES_BASIC = [
-  // Individual schemas — Basic auth. Servers NOT present in schema 127.
-  // Schema 16 Albatross: attrRack=938, attrActive=1072, attrRegion=932, attrType — probe showed no type attr, filter by type 100 = servers only
-  { schema:'16',  name:'Albatross (16)',       typeId:100, attrRack:'938',  attrActive:'1072', attrRegion:'932',  attrType:null },
-  // Schema 20 Eagle: attrRack=1112, attrActive=1116, attrRegion=1108
-  { schema:'20',  name:'Eagle (20)',           typeId:118, attrRack:'1112', attrActive:'1116', attrRegion:'1108', attrType:null },
-  // Schema 25 Phoenix: attrRack=1352, attrActive=1356, attrRegion=1349
-  { schema:'25',  name:'Phoenix (25)',         typeId:135, attrRack:'1352', attrActive:'1356', attrRegion:'1349', attrType:null },
+// ── Sources ───────────────────────────────────────────────────────────────────
+const SOURCES = [
+  // Schema 127 — OAuth required. Filter to attrType=2101="server" in code.
+  { schema:'127', name:'CoreWeave',   typeId:344, attrRack:'2088', attrActive:'2092', attrRegion:'2084', attrType:'2101', auth:'oauth' },
+  { schema:'127', name:'Osprey',      typeId:347, attrRack:'2088', attrActive:'2092', attrRegion:'2084', attrType:'2101', auth:'oauth' },
+  { schema:'127', name:'Snipe/Heron', typeId:349, attrRack:'2088', attrActive:'2092', attrRegion:'2084', attrType:'2101', auth:'oauth' },
+  // Individual schemas — Basic auth. No servers in schema 127 for these.
+  { schema:'16',  name:'Albatross',   typeId:100, attrRack:'938',  attrActive:'1072', attrRegion:'932',  attrType:null,   auth:'basic' },
+  { schema:'20',  name:'Eagle',       typeId:118, attrRack:'1112', attrActive:'1116', attrRegion:'1108', attrType:null,   auth:'basic' },
+  { schema:'25',  name:'Phoenix',     typeId:135, attrRack:'1352', attrActive:'1356', attrRegion:'1349', attrType:null,   auth:'basic' },
 ];
 
 // ── Site mapping ──────────────────────────────────────────────────────────────
@@ -116,7 +109,7 @@ function getOAuthToken() {
         try {
           const j = JSON.parse(d);
           if (j.access_token) resolve('Bearer ' + j.access_token);
-          else reject(new Error('OAuth failed: ' + (j.error_description || j.error || d.slice(0,100))));
+          else reject(new Error('OAuth failed: ' + (j.error_description || d.slice(0,100))));
         } catch(e) { reject(e); }
       });
     });
@@ -128,47 +121,69 @@ function getBasicToken() {
   return 'Basic ' + Buffer.from(process.env.JIRA_EMAIL + ':' + process.env.JIRA_TOKEN).toString('base64');
 }
 
-// ── HTTP page fetch ───────────────────────────────────────────────────────────
+// ── HTTP helpers ──────────────────────────────────────────────────────────────
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-async function fetchPage(auth, schemaId, typeId, page, retries = 5) {
-  const body = JSON.stringify({
-    qlQuery:      `objectTypeId = ${typeId}`,
-    resultPerPage: PAGE_SIZE,
-    page,
-    includeAttributes: true,
-    objectSchemaId: String(schemaId),
+// Step 1: Get exact total count using the totalcount endpoint
+function getTotalCount(auth, schemaId, typeId) {
+  const body = JSON.stringify({ qlQuery: `objectTypeId = ${typeId}`, objectSchemaId: String(schemaId) });
+  return new Promise(resolve => {
+    const req = https.request({
+      hostname: HOST, port: 443, path: `${BASE}/object/aql/totalcount`, method: 'POST',
+      headers: { 'Accept':'application/json','Content-Type':'application/json','Authorization':auth,'Content-Length':Buffer.byteLength(body) },
+      timeout: 15000,
+    }, res => {
+      let d = ''; res.on('data', c => d += c);
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(d);
+          resolve(j.count || j.total || 0);
+        } catch(e) { resolve(0); }
+      });
+    });
+    req.on('error', () => resolve(0));
+    req.on('timeout', () => { req.destroy(); resolve(0); });
+    req.write(body); req.end();
   });
+}
+
+// Step 2: Fetch a specific page using the DEPRECATED GET /aql/objects
+// This is the only endpoint that actually supports pagination (page + resultPerPage)
+// Still fully functional as of 2026 despite deprecation notice
+async function fetchPageGET(auth, schemaId, typeId, page, retries = 4) {
+  const ql     = encodeURIComponent(`objectTypeId = ${typeId}`);
+  const path   = `${BASE}/aql/objects?qlQuery=${ql}&objectSchemaId=${schemaId}&page=${page}&resultPerPage=${PAGE_SIZE}&includeAttributes=true`;
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     const result = await new Promise(resolve => {
       const req = https.request({
-        hostname: HOST, port: 443, path: `${BASE}/object/aql`, method: 'POST',
-        headers: { 'Accept':'application/json','Content-Type':'application/json','Authorization':auth,'Content-Length':Buffer.byteLength(body) },
+        hostname: HOST, port: 443, path, method: 'GET',
+        headers: { 'Accept': 'application/json', 'Authorization': auth },
         timeout: 30000,
       }, res => {
         let d = ''; res.on('data', c => d += c);
         res.on('end', () => {
           try { resolve({ status: res.statusCode, data: JSON.parse(d) }); }
-          catch(e) { resolve({ status: res.statusCode, data: { values: [] } }); }
+          catch(e) { resolve({ status: res.statusCode, data: { objectEntries: [] } }); }
         });
       });
-      req.on('error',   () => resolve({ status: 0,   data: { values: [] } }));
-      req.on('timeout', () => { req.destroy(); resolve({ status: 0, data: { values: [] } }); });
-      req.write(body); req.end();
+      req.on('error',   () => resolve({ status: 0,   data: { objectEntries: [] } }));
+      req.on('timeout', () => { req.destroy(); resolve({ status: 0, data: { objectEntries: [] } }); });
+      req.end();
     });
 
     if (result.status === 429) {
       const wait = 1000 * Math.pow(2, attempt);
-      console.warn(`[sync:servers] 429 rate limit on page ${page}, waiting ${wait}ms...`);
+      console.warn(`[sync:servers] 429 rate limit, waiting ${wait}ms...`);
       await sleep(wait);
       continue;
     }
     return result;
   }
-  return { status: 429, data: { values: [], isLast: true } };
+  return { status: 429, data: { objectEntries: [] } };
 }
 
-// ── Parse object → site ───────────────────────────────────────────────────────
+// ── Parse one object into a site ──────────────────────────────────────────────
 function objectSite(obj, source) {
   let rack = '', region = '', active = null, assetType = '';
 
@@ -176,83 +191,66 @@ function objectSite(obj, source) {
     const id  = String(a.objectTypeAttributeId);
     const val = (a.objectAttributeValues || [])[0];
     const v   = val ? (val.displayValue || val.value || '') : '';
-    if (id === source.attrRack)   rack      = String(v);
-    if (id === source.attrRegion) region    = String(v);
-    if (id === source.attrActive) active    = String(v).toLowerCase() === 'true';
-    if (source.attrType && id === source.attrType) assetType = String(v).toLowerCase();
+    if (id === source.attrRack)                     rack      = String(v);
+    if (id === source.attrRegion)                   region    = String(v);
+    if (id === source.attrActive)                   active    = String(v).toLowerCase() === 'true';
+    if (source.attrType && id === source.attrType)  assetType = String(v).toLowerCase();
   }
 
-  // For schema 127 sources: only count if asset type is "server"
+  // Schema 127 sources: only count objects where Asset Type = "server"
   if (source.attrType && assetType !== 'server') return null;
 
-  // Skip if explicitly inactive
+  // Skip explicitly inactive
   if (active === false) return null;
 
   return siteFromRack(rack) || (region ? RACK_OVERRIDES[region.trim()] : null);
 }
 
-// ── Fetch all pages for one source using worker queue ────────────────────────
-async function fetchAllPages(auth, source, siteCounts, onProgress) {
-  // Get page 0 first
-  const first = await fetchPage(auth, source.schema, source.typeId, 0);
-  if (first.status !== 200) {
-    console.warn(`[sync:servers] ${source.name}: HTTP ${first.status} on page 0 — skipping`);
-    return 0;
-  }
+// ── Fetch all pages for one source ────────────────────────────────────────────
+async function fetchSource(auth, source, siteCounts, onProgress) {
+  // Get exact total count first
+  const total      = await getTotalCount(auth, source.schema, source.typeId);
+  const totalPages = Math.ceil(total / PAGE_SIZE);
 
-  let counted = 0;
-  for (const obj of (first.data?.values || [])) {
-    const site = objectSite(obj, source);
-    if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
-  }
+  console.log(`[sync:servers] ${source.name}: ${total.toLocaleString()} total objects → ${totalPages} pages`);
 
-  const isLast = first.data?.isLast || first.data?.last || (first.data?.values || []).length < PAGE_SIZE || (first.data?.values || []).length === 0;
-  if (isLast) {
-    console.log(`[sync:servers] ${source.name}: ✓ ${counted} active servers (1 page)`);
-    return counted;
-  }
+  if (total === 0) return 0;
 
-  // Multi-page: use worker queue
-  let nextPage       = 1;
-  let lastPage       = null;
-  let pagesDone      = 1;
-  let finished       = false;
+  // Build page list and fetch concurrently in batches
+  let counted   = 0;
+  let pagesDone = 0;
 
-  async function worker() {
-    while (true) {
-      if (finished) return;
-      if (lastPage !== null && nextPage > lastPage) return;
-      const page = nextPage++;
+  for (let batchStart = 0; batchStart < totalPages; batchStart += CONCURRENCY) {
+    const batch = [];
+    for (let i = batchStart; i < Math.min(batchStart + CONCURRENCY, totalPages); i++) {
+      batch.push(i);
+    }
 
-      const r      = await fetchPage(auth, source.schema, source.typeId, page);
-      const values = (r.status === 200 && r.data?.values) ? r.data.values : [];
+    const results = await Promise.all(batch.map(p => fetchPageGET(auth, source.schema, source.typeId, p)));
 
-      for (const obj of values) {
+    for (const r of results) {
+      // GET /aql/objects returns objectEntries (not values)
+      const entries = (r.status === 200) ? (r.data.objectEntries || r.data.values || []) : [];
+      for (const obj of entries) {
         const site = objectSite(obj, source);
         if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
       }
       pagesDone++;
-
-      // Stop when: no results, fewer than a full page, isLast, or error
-      // NOTE: isLast is unreliable in this API — empty page is the true signal
-      if (values.length === 0 || values.length < PAGE_SIZE || r.data?.isLast || r.data?.last || r.status !== 200) {
-        finished = true;
-        return;
-      }
-
-      if (pagesDone % 100 === 0) {
-        const total = Object.values(siteCounts).reduce((a, b) => a + b, 0);
-        console.log(`[sync:servers] ${source.name}: ${pagesDone} pages done, ${counted.toLocaleString()} servers (running total: ${total.toLocaleString()})`);
-        onProgress?.({ done: pagesDone, total: null, servers: total, status: `Scanning ${source.name}...` });
-      }
-
-      await sleep(50); // gentle rate limit
     }
+
+    // Progress every 10 batches (60 pages)
+    if (pagesDone % (CONCURRENCY * 10) === 0 || pagesDone >= totalPages) {
+      const pct     = Math.round(pagesDone / totalPages * 100);
+      const running = Object.values(siteCounts).reduce((a, b) => a + b, 0);
+      console.log(`[sync:servers] ${source.name}: ${pct}% (${pagesDone}/${totalPages} pages, ${counted.toLocaleString()} servers)`);
+      onProgress?.({ done: pagesDone, total: totalPages, servers: running, status: `Scanning ${source.name}...` });
+    }
+
+    // Small delay between batches
+    await sleep(100);
   }
 
-  await Promise.all(Array.from({ length: WORKERS }, () => worker()));
-
-  console.log(`[sync:servers] ${source.name}: ✓ ${counted.toLocaleString()} active servers (${pagesDone} pages)`);
+  console.log(`[sync:servers] ${source.name}: ✓ ${counted.toLocaleString()} active servers`);
   return counted;
 }
 
@@ -264,43 +262,32 @@ const upsertMany = db.transaction(rows => { for (const r of rows) upsertServerCo
 
 // ── Main sync ─────────────────────────────────────────────────────────────────
 async function syncServers(onProgress) {
-  const hasOAuth = !!(CLIENT_ID && CLIENT_SECRET);
-  console.log(`[sync:servers] ─────────────────────────────────────────`);
+  console.log(`[sync:servers] ════════════════════════════════════════════`);
   console.log(`[sync:servers] Starting server sync`);
-  console.log(`[sync:servers] OAuth available: ${hasOAuth}`);
+  console.log(`[sync:servers] Using GET /aql/objects for pagination (POST /object/aql is broken — no pagination support)`);
+  console.log(`[sync:servers] Sources:`);
+  SOURCES.forEach(s => console.log(`[sync:servers]   Schema ${s.schema} ${s.name} (type ${s.typeId}) via ${s.auth}`));
+  console.log(`[sync:servers] ════════════════════════════════════════════`);
 
-  if (!hasOAuth) {
-    console.error('[sync:servers] ERROR: ASSETS_CLIENT_ID and ASSETS_CLIENT_SECRET required');
-    throw new Error('OAuth credentials required for server sync');
+  if (!CLIENT_ID || !CLIENT_SECRET) {
+    throw new Error('ASSETS_CLIENT_ID and ASSETS_CLIENT_SECRET are required');
   }
 
-  console.log(`[sync:servers] Sources:`);
-  console.log(`[sync:servers]   Schema 127 (OAuth): CoreWeave(344) + Osprey(347) + Snipe/Heron(349) — filtered to servers only`);
-  console.log(`[sync:servers]   Schema 16  (Basic): Albatross(100) — no servers in schema 127`);
-  console.log(`[sync:servers]   Schema 20  (Basic): Eagle(118) — no servers in schema 127`);
-  console.log(`[sync:servers]   Schema 25  (Basic): Phoenix(135) — no servers in schema 127`);
-  console.log(`[sync:servers] ─────────────────────────────────────────`);
-
   const basicToken = getBasicToken();
-
-  const now     = new Date().toISOString();
-  const logRow  = db.prepare(`INSERT INTO sync_log (type, status, started_at) VALUES ('servers', 'running', ?)`).run(now);
-  const logId   = logRow.lastInsertRowid;
+  const now        = new Date().toISOString();
+  const logRow     = db.prepare(`INSERT INTO sync_log (type, status, started_at) VALUES ('servers', 'running', ?)`).run(now);
+  const logId      = logRow.lastInsertRowid;
 
   const siteCounts = {};
   let grandTotal   = 0;
 
   try {
-    // Schema 127 sources via OAuth — refresh token before each source
-    for (const source of SOURCES_OAUTH) {
-      const oauthToken = await getOAuthToken(); // fresh token each time
-      const count = await fetchAllPages(oauthToken, source, siteCounts, onProgress);
-      grandTotal += count;
-    }
+    for (const source of SOURCES) {
+      // Get a fresh OAuth token for each OAuth source (tokens expire in ~1hr)
+      const auth = source.auth === 'oauth' ? await getOAuthToken() : basicToken;
+      if (source.auth === 'oauth') console.log(`[sync:servers] OAuth token refreshed for ${source.name}`);
 
-    // Individual schema sources via Basic auth
-    for (const source of SOURCES_BASIC) {
-      const count = await fetchAllPages(basicToken, source, siteCounts, onProgress);
+      const count = await fetchSource(auth, source, siteCounts, onProgress);
       grandTotal += count;
     }
 
@@ -310,13 +297,12 @@ async function syncServers(onProgress) {
     db.prepare(`UPDATE sync_log SET status='success', completed_at=?, records_synced=? WHERE id=?`)
       .run(new Date().toISOString(), grandTotal, logId);
 
-    console.log(`[sync:servers] ─────────────────────────────────────────`);
+    console.log(`[sync:servers] ════════════════════════════════════════════`);
     console.log(`[sync:servers] ✓ COMPLETE: ${grandTotal.toLocaleString()} active servers across ${rows.length} sites`);
-    console.log(`[sync:servers] Top 10 sites by server count:`);
-    rows.sort((a, b) => b.count - a.count).slice(0, 10).forEach(r =>
+    rows.sort((a, b) => b.count - a.count).slice(0, 15).forEach(r =>
       console.log(`[sync:servers]   ${r.site.padEnd(12)} ${r.count.toLocaleString()}`)
     );
-    console.log(`[sync:servers] ─────────────────────────────────────────`);
+    console.log(`[sync:servers] ════════════════════════════════════════════`);
 
     return { totalActive: grandTotal, sitesCount: rows.length };
 
