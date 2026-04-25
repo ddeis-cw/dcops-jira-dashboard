@@ -150,28 +150,31 @@ function getTotalCount(auth, schemaId, typeId) {
 // Step 2: Fetch a specific page using the DEPRECATED GET /aql/objects
 // This is the only endpoint that actually supports pagination (page + resultPerPage)
 // Still fully functional as of 2026 despite deprecation notice
-async function fetchPageGET(auth, schemaId, typeId, page, retries = 4) {
-  const ql     = encodeURIComponent(`objectTypeId = ${typeId}`);
-  const path   = `${BASE}/aql/objects?qlQuery=${ql}&objectSchemaId=${schemaId}&page=${page}&resultPerPage=${PAGE_SIZE}&includeAttributes=true`;
-
+async function fetchPagePOST(auth, schemaId, typeId, page, retries = 4) {
+  const body = JSON.stringify({
+    qlQuery: `objectTypeId = ${typeId}`,
+    resultPerPage: PAGE_SIZE,
+    page,
+    includeAttributes: true,
+    objectSchemaId: String(schemaId),
+  });
   for (let attempt = 0; attempt <= retries; attempt++) {
     const result = await new Promise(resolve => {
       const req = https.request({
-        hostname: HOST, port: 443, path, method: 'GET',
-        headers: { 'Accept': 'application/json', 'Authorization': auth },
+        hostname: HOST, port: 443, path: `${BASE}/object/aql`, method: 'POST',
+        headers: { 'Accept':'application/json','Content-Type':'application/json','Authorization':auth,'Content-Length':Buffer.byteLength(body) },
         timeout: 30000,
       }, res => {
         let d = ''; res.on('data', c => d += c);
         res.on('end', () => {
           try { resolve({ status: res.statusCode, data: JSON.parse(d) }); }
-          catch(e) { resolve({ status: res.statusCode, data: { objectEntries: [] } }); }
+          catch(e) { resolve({ status: res.statusCode, data: { values: [] } }); }
         });
       });
-      req.on('error',   () => resolve({ status: 0,   data: { objectEntries: [] } }));
-      req.on('timeout', () => { req.destroy(); resolve({ status: 0, data: { objectEntries: [] } }); });
-      req.end();
+      req.on('error',   () => resolve({ status: 0, data: { values: [] } }));
+      req.on('timeout', () => { req.destroy(); resolve({ status: 0, data: { values: [] } }); });
+      req.write(body); req.end();
     });
-
     if (result.status === 429) {
       const wait = 1000 * Math.pow(2, attempt);
       console.warn(`[sync:servers] 429 rate limit, waiting ${wait}ms...`);
@@ -180,7 +183,7 @@ async function fetchPageGET(auth, schemaId, typeId, page, retries = 4) {
     }
     return result;
   }
-  return { status: 429, data: { objectEntries: [] } };
+  return { status: 429, data: { values: [] } };
 }
 
 // ── Parse one object into a site ──────────────────────────────────────────────
@@ -226,11 +229,10 @@ async function fetchSource(auth, source, siteCounts, onProgress) {
       batch.push(i);
     }
 
-    const results = await Promise.all(batch.map(p => fetchPageGET(auth, source.schema, source.typeId, p)));
+    const results = await Promise.all(batch.map(p => fetchPagePOST(auth, source.schema, source.typeId, p)));
 
     for (const r of results) {
-      // GET /aql/objects returns objectEntries (not values)
-      const entries = (r.status === 200) ? (r.data.objectEntries || r.data.values || []) : [];
+      const entries = (r.status === 200) ? (r.data.values || []) : [];
       for (const obj of entries) {
         const site = objectSite(obj, source);
         if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
@@ -264,7 +266,7 @@ const upsertMany = db.transaction(rows => { for (const r of rows) upsertServerCo
 async function syncServers(onProgress) {
   console.log(`[sync:servers] ════════════════════════════════════════════`);
   console.log(`[sync:servers] Starting server sync`);
-  console.log(`[sync:servers] Using GET /aql/objects for pagination (POST /object/aql is broken — no pagination support)`);
+  console.log(`[sync:servers] Using POST /object/aql with totalcount-based pagination (stops at exact page count)`);
   console.log(`[sync:servers] Sources:`);
   SOURCES.forEach(s => console.log(`[sync:servers]   Schema ${s.schema} ${s.name} (type ${s.typeId}) via ${s.auth}`));
   console.log(`[sync:servers] ════════════════════════════════════════════`);
