@@ -206,7 +206,7 @@ async function fetchAllPages(auth, source, siteCounts, onProgress) {
     if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
   }
 
-  const isLast = first.data?.isLast || first.data?.last || (first.data?.values || []).length < PAGE_SIZE;
+  const isLast = first.data?.isLast || first.data?.last || (first.data?.values || []).length < PAGE_SIZE || (first.data?.values || []).length === 0;
   if (isLast) {
     console.log(`[sync:servers] ${source.name}: ✓ ${counted} active servers (1 page)`);
     return counted;
@@ -233,9 +233,9 @@ async function fetchAllPages(auth, source, siteCounts, onProgress) {
       }
       pagesDone++;
 
-      // Detect end of results
-      if (values.length < PAGE_SIZE || r.data?.isLast || r.data?.last || r.status !== 200) {
-        if (lastPage === null || page < lastPage) lastPage = page;
+      // Stop when: no results, fewer than a full page, isLast, or error
+      // NOTE: isLast is unreliable in this API — empty page is the true signal
+      if (values.length === 0 || values.length < PAGE_SIZE || r.data?.isLast || r.data?.last || r.status !== 200) {
         finished = true;
         return;
       }
@@ -281,8 +281,6 @@ async function syncServers(onProgress) {
   console.log(`[sync:servers]   Schema 25  (Basic): Phoenix(135) — no servers in schema 127`);
   console.log(`[sync:servers] ─────────────────────────────────────────`);
 
-  const oauthToken = await getOAuthToken();
-  console.log(`[sync:servers] OAuth token refreshed`);
   const basicToken = getBasicToken();
 
   const now     = new Date().toISOString();
@@ -293,8 +291,9 @@ async function syncServers(onProgress) {
   let grandTotal   = 0;
 
   try {
-    // Schema 127 sources via OAuth
+    // Schema 127 sources via OAuth — refresh token before each source
     for (const source of SOURCES_OAUTH) {
+      const oauthToken = await getOAuthToken(); // fresh token each time
       const count = await fetchAllPages(oauthToken, source, siteCounts, onProgress);
       grandTotal += count;
     }
