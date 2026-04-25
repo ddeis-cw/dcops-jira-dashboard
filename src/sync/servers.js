@@ -1,26 +1,29 @@
 /**
- * src/sync/servers.js
+ * src/sync/servers.js — DEFINITIVE VERSION
  *
- * ARCHITECTURE (confirmed 2026-04-24):
+ * CONFIRMED API BEHAVIOR (2026-04-24):
+ *   POST /object/aql ignores ALL pagination params (page, startAt, resultPerPage).
+ *   Always returns the same first 25 objects regardless.
+ *   ONLY working approach: objectId range queries — splits results by ID range,
+ *   each range small enough to fit in 25 results.
  *
- * From schema 127 via OAuth — types with servers (attrType=2101="server"):
- *   Type 344 = CoreWeave internal
- *   Type 347 = Osprey customer
- *   Type 349 = Snipe/Heron customer
+ * SOURCES:
+ *   Schema 127 (OAuth) — filter attrType=2101="server" in code:
+ *     Type 344 = CoreWeave  (SNIPE objects, IDs start at ~589372)
+ *     Type 347 = Osprey     (SNIPE objects, same ID space)
+ *     Type 349 = Snipe/Heron (SNIPE objects, same ID space)
  *
- * From individual schemas via Basic auth — no servers in schema 127:
- *   Schema 16 type 100 = Albatross
- *   Schema 20 type 118 = Eagle
- *   Schema 25 type 135 = Phoenix
+ *   Individual schemas (Basic auth) — no servers in schema 127:
+ *     Schema 16 type 100 = Albatross  (ALB objects)
+ *     Schema 20 type 118 = Eagle      (EAG objects)
+ *     Schema 25 type 135 = Phoenix    (PHX objects)
  *
- * CRITICAL API NOTE:
- *   POST /object/aql does NOT support pagination — always returns same 25 objects.
- *   Must use deprecated GET /aql/objects which has working page+resultPerPage params.
- *   GET /aql/objects still functional as of Jan 2026 despite deprecation notice.
- *   Use POST /object/aql/totalcount first to get exact page count.
- *
- * Auth: OAuth2 (fresh token per source) for schema 127.
- *       Basic (JIRA_TOKEN) for schemas 16/20/25.
+ * CHUNK SIZING:
+ *   Schema 127: 323,714 objects across IDs ~589372-913086. Density ~1 per ID.
+ *     Types 344+347+349 together = majority. Use chunk=20 → max ~20 hits/query.
+ *   Schema 16: 44,077 objects. ALB IDs start low. chunk=25.
+ *   Schema 20: 8,916 objects. EAG IDs. chunk=25.
+ *   Schema 25: 75,075 objects. PHX IDs up to ~1.2M. chunk=25.
  */
 'use strict';
 
@@ -33,19 +36,66 @@ const HOST          = 'api.atlassian.com';
 const BASE          = `/ex/jira/${CLOUD_ID}/jsm/assets/workspace/${WS}/v1`;
 const CLIENT_ID     = process.env.ASSETS_CLIENT_ID;
 const CLIENT_SECRET = process.env.ASSETS_CLIENT_SECRET;
-const PAGE_SIZE     = 25;
-const CONCURRENCY   = 6;
+const CONCURRENCY   = 8;
 
-// ── Sources ───────────────────────────────────────────────────────────────────
+// ── Source definitions ────────────────────────────────────────────────────────
 const SOURCES = [
-  // Schema 127 — OAuth required. Filter to attrType=2101="server" in code.
-  { schema:'127', name:'CoreWeave',   typeId:344, attrRack:'2088', attrActive:'2092', attrRegion:'2084', attrType:'2101', auth:'oauth' },
-  { schema:'127', name:'Osprey',      typeId:347, attrRack:'2088', attrActive:'2092', attrRegion:'2084', attrType:'2101', auth:'oauth' },
-  { schema:'127', name:'Snipe/Heron', typeId:349, attrRack:'2088', attrActive:'2092', attrRegion:'2084', attrType:'2101', auth:'oauth' },
-  // Individual schemas — Basic auth. No servers in schema 127 for these.
-  { schema:'16',  name:'Albatross',   typeId:100, attrRack:'938',  attrActive:'1072', attrRegion:'932',  attrType:null,   auth:'basic' },
-  { schema:'20',  name:'Eagle',       typeId:118, attrRack:'1112', attrActive:'1116', attrRegion:'1108', attrType:null,   auth:'basic' },
-  { schema:'25',  name:'Phoenix',     typeId:135, attrRack:'1352', attrActive:'1356', attrRegion:'1349', attrType:null,   auth:'basic' },
+  // Schema 127 — OAuth. All three types share same ID space (589372–913086).
+  // Query all three types together per chunk to minimize API calls.
+  // Filter to attrType=2101="server" in code.
+  {
+    schema:     '127',
+    name:       'schema127-servers',
+    typeIds:    [344, 347, 349],       // CoreWeave + Osprey + Snipe/Heron
+    rangeStart: 589372,
+    rangeEnd:   950000,                // 589372 + 323714 + buffer
+    chunk:      20,                    // ~20 objects max per query at density ~1/ID
+    attrRack:   '2088',
+    attrActive: '2092',
+    attrRegion: '2084',
+    attrType:   '2101',               // filter to "server" only
+    auth:       'oauth',
+  },
+  // Individual schemas — Basic auth
+  {
+    schema:     '16',
+    name:       'Albatross',
+    typeIds:    [100],
+    rangeStart: 1,
+    rangeEnd:   500000,
+    chunk:      25,
+    attrRack:   '938',
+    attrActive: '1072',
+    attrRegion: '932',
+    attrType:   null,
+    auth:       'basic',
+  },
+  {
+    schema:     '20',
+    name:       'Eagle',
+    typeIds:    [118],
+    rangeStart: 1,
+    rangeEnd:   250000,
+    chunk:      25,
+    attrRack:   '1112',
+    attrActive: '1116',
+    attrRegion: '1108',
+    attrType:   null,
+    auth:       'basic',
+  },
+  {
+    schema:     '25',
+    name:       'Phoenix',
+    typeIds:    [135],
+    rangeStart: 1,
+    rangeEnd:   1500000,
+    chunk:      25,
+    attrRack:   '1352',
+    attrActive: '1356',
+    attrRegion: '1349',
+    attrType:   null,
+    auth:       'basic',
+  },
 ];
 
 // ── Site mapping ──────────────────────────────────────────────────────────────
@@ -121,43 +171,21 @@ function getBasicToken() {
   return 'Basic ' + Buffer.from(process.env.JIRA_EMAIL + ':' + process.env.JIRA_TOKEN).toString('base64');
 }
 
-// ── HTTP helpers ──────────────────────────────────────────────────────────────
+// ── objectId range query ──────────────────────────────────────────────────────
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// Step 1: Get exact total count using the totalcount endpoint
-function getTotalCount(auth, schemaId, typeId) {
-  const body = JSON.stringify({ qlQuery: `objectTypeId = ${typeId}`, objectSchemaId: String(schemaId) });
-  return new Promise(resolve => {
-    const req = https.request({
-      hostname: HOST, port: 443, path: `${BASE}/object/aql/totalcount`, method: 'POST',
-      headers: { 'Accept':'application/json','Content-Type':'application/json','Authorization':auth,'Content-Length':Buffer.byteLength(body) },
-      timeout: 15000,
-    }, res => {
-      let d = ''; res.on('data', c => d += c);
-      res.on('end', () => {
-        try {
-          const j = JSON.parse(d);
-          resolve(j.totalCount || j.count || j.total || 0);
-        } catch(e) { resolve(0); }
-      });
-    });
-    req.on('error', () => resolve(0));
-    req.on('timeout', () => { req.destroy(); resolve(0); });
-    req.write(body); req.end();
-  });
-}
+async function queryRange(auth, source, lo, hi, retries = 4) {
+  const typeFilter = source.typeIds.length === 1
+    ? `objectTypeId = ${source.typeIds[0]}`
+    : `objectTypeId IN (${source.typeIds.join(',')})`;
 
-// Step 2: Fetch a specific page using the DEPRECATED GET /aql/objects
-// This is the only endpoint that actually supports pagination (page + resultPerPage)
-// Still fully functional as of 2026 despite deprecation notice
-async function fetchPagePOST(auth, schemaId, typeId, page, retries = 4) {
   const body = JSON.stringify({
-    qlQuery: `objectTypeId = ${typeId}`,
-    resultPerPage: PAGE_SIZE,
-    page,
+    qlQuery:           `${typeFilter} AND objectId >= ${lo} AND objectId <= ${hi}`,
+    maxResults:        25,
     includeAttributes: true,
-    objectSchemaId: String(schemaId),
+    objectSchemaId:    source.schema,
   });
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     const result = await new Promise(resolve => {
       const req = https.request({
@@ -175,9 +203,10 @@ async function fetchPagePOST(auth, schemaId, typeId, page, retries = 4) {
       req.on('timeout', () => { req.destroy(); resolve({ status: 0, data: { values: [] } }); });
       req.write(body); req.end();
     });
+
     if (result.status === 429) {
       const wait = 1000 * Math.pow(2, attempt);
-      console.warn(`[sync:servers] 429 rate limit, waiting ${wait}ms...`);
+      console.warn(`[sync:servers] 429 on range ${lo}-${hi}, waiting ${wait}ms...`);
       await sleep(wait);
       continue;
     }
@@ -186,70 +215,59 @@ async function fetchPagePOST(auth, schemaId, typeId, page, retries = 4) {
   return { status: 429, data: { values: [] } };
 }
 
-// ── Parse one object into a site ──────────────────────────────────────────────
+// ── Parse object → site ───────────────────────────────────────────────────────
 function objectSite(obj, source) {
   let rack = '', region = '', active = null, assetType = '';
-
   for (const a of (obj.attributes || [])) {
     const id  = String(a.objectTypeAttributeId);
     const val = (a.objectAttributeValues || [])[0];
     const v   = val ? (val.displayValue || val.value || '') : '';
-    if (id === source.attrRack)                     rack      = String(v);
-    if (id === source.attrRegion)                   region    = String(v);
-    if (id === source.attrActive)                   active    = String(v).toLowerCase() === 'true';
-    if (source.attrType && id === source.attrType)  assetType = String(v).toLowerCase();
+    if (id === source.attrRack)                    rack      = String(v);
+    if (id === source.attrRegion)                  region    = String(v);
+    if (id === source.attrActive)                  active    = String(v).toLowerCase() === 'true';
+    if (source.attrType && id === source.attrType) assetType = String(v).toLowerCase();
   }
-
-  // Schema 127 sources: only count objects where Asset Type = "server"
   if (source.attrType && assetType !== 'server') return null;
-
-  // Skip explicitly inactive
   if (active === false) return null;
-
   return siteFromRack(rack) || (region ? RACK_OVERRIDES[region.trim()] : null);
 }
 
-// ── Fetch all pages for one source ────────────────────────────────────────────
-async function fetchSource(auth, source, siteCounts, onProgress) {
-  // Get exact total count first
-  const total      = await getTotalCount(auth, source.schema, source.typeId);
-  const totalPages = Math.ceil(total / PAGE_SIZE);
+// ── Scan one source via objectId ranges ───────────────────────────────────────
+async function scanSource(auth, source, siteCounts, onProgress) {
+  const ranges = [];
+  for (let lo = source.rangeStart; lo <= source.rangeEnd; lo += source.chunk) {
+    ranges.push(lo);
+  }
 
-  console.log(`[sync:servers] ${source.name}: ${total.toLocaleString()} total objects → ${totalPages} pages`);
-
-  if (total === 0) return 0;
-
-  // Build page list and fetch concurrently in batches
+  const total   = ranges.length;
   let counted   = 0;
-  let pagesDone = 0;
+  let done      = 0;
 
-  for (let batchStart = 0; batchStart < totalPages; batchStart += CONCURRENCY) {
-    const batch = [];
-    for (let i = batchStart; i < Math.min(batchStart + CONCURRENCY, totalPages); i++) {
-      batch.push(i);
-    }
+  console.log(`[sync:servers] ${source.name}: scanning ${total.toLocaleString()} chunks (IDs ${source.rangeStart}-${source.rangeEnd}, chunk=${source.chunk})`);
 
-    const results = await Promise.all(batch.map(p => fetchPagePOST(auth, source.schema, source.typeId, p)));
-
-    for (const r of results) {
-      const entries = (r.status === 200) ? (r.data.values || []) : [];
-      for (const obj of entries) {
-        const site = objectSite(obj, source);
-        if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
+  for (let i = 0; i < ranges.length; i += CONCURRENCY) {
+    const batch = ranges.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map(async lo => {
+      const hi = lo + source.chunk - 1;
+      const r  = await queryRange(auth, source, lo, hi);
+      if (r.status === 200) {
+        for (const obj of (r.data.values || [])) {
+          const site = objectSite(obj, source);
+          if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
+        }
       }
-      pagesDone++;
-    }
+      done++;
+    }));
 
-    // Progress every 10 batches (60 pages)
-    if (pagesDone % (CONCURRENCY * 10) === 0 || pagesDone >= totalPages) {
-      const pct     = Math.round(pagesDone / totalPages * 100);
+    // Progress every 5%
+    if (done % Math.max(1, Math.floor(total / 20)) === 0 || done === total) {
+      const pct     = Math.round(done / total * 100);
       const running = Object.values(siteCounts).reduce((a, b) => a + b, 0);
-      console.log(`[sync:servers] ${source.name}: ${pct}% (${pagesDone}/${totalPages} pages, ${counted.toLocaleString()} servers)`);
-      onProgress?.({ done: pagesDone, total: totalPages, servers: running, status: `Scanning ${source.name}...` });
+      console.log(`[sync:servers] ${source.name}: ${pct}% (${done}/${total} chunks, ${counted.toLocaleString()} servers)`);
+      onProgress?.({ done, total, servers: running, status: `Scanning ${source.name}...` });
     }
 
-    // Small delay between batches
-    await sleep(100);
+    await sleep(50); // gentle throttle
   }
 
   console.log(`[sync:servers] ${source.name}: ✓ ${counted.toLocaleString()} active servers`);
@@ -262,18 +280,13 @@ const upsertServerCount = db.prepare(
 );
 const upsertMany = db.transaction(rows => { for (const r of rows) upsertServerCount.run(r); });
 
-// ── Main sync ─────────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 async function syncServers(onProgress) {
   console.log(`[sync:servers] ════════════════════════════════════════════`);
-  console.log(`[sync:servers] Starting server sync`);
-  console.log(`[sync:servers] Using POST /object/aql with totalcount-based pagination (stops at exact page count)`);
-  console.log(`[sync:servers] Sources:`);
-  SOURCES.forEach(s => console.log(`[sync:servers]   Schema ${s.schema} ${s.name} (type ${s.typeId}) via ${s.auth}`));
-  console.log(`[sync:servers] ════════════════════════════════════════════`);
+  console.log(`[sync:servers] Starting server sync — objectId range method`);
+  console.log(`[sync:servers] POST /object/aql pagination confirmed broken — using range queries`);
 
-  if (!CLIENT_ID || !CLIENT_SECRET) {
-    throw new Error('ASSETS_CLIENT_ID and ASSETS_CLIENT_SECRET are required');
-  }
+  if (!CLIENT_ID || !CLIENT_SECRET) throw new Error('ASSETS_CLIENT_ID and ASSETS_CLIENT_SECRET required');
 
   const basicToken = getBasicToken();
   const now        = new Date().toISOString();
@@ -285,11 +298,9 @@ async function syncServers(onProgress) {
 
   try {
     for (const source of SOURCES) {
-      // Get a fresh OAuth token for each OAuth source (tokens expire in ~1hr)
       const auth = source.auth === 'oauth' ? await getOAuthToken() : basicToken;
       if (source.auth === 'oauth') console.log(`[sync:servers] OAuth token refreshed for ${source.name}`);
-
-      const count = await fetchSource(auth, source, siteCounts, onProgress);
+      const count = await scanSource(auth, source, siteCounts, onProgress);
       grandTotal += count;
     }
 
