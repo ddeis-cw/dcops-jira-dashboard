@@ -1,16 +1,26 @@
 /**
  * src/sync/servers.js
  *
- * Counts active servers per site from Jira Assets snipe-it schemas.
+ * Counts ACTIVE SERVERS per site from Jira Assets.
  *
- * Uses a worker-queue approach:
- * 1. Fetch page 0 to get results + check isLast
- * 2. If multi-page: probe to estimate total pages, build page queue
- * 3. N workers pull from queue concurrently, retrying 429s
- * 4. Guaranteed complete coverage — no early exits
+ * Architecture (confirmed 2026-04-24):
  *
- * Auth: OAuth2 client credentials (refreshed each run) — preferred for elevated access.
- *       Falls back to Basic (JIRA_TOKEN) if OAuth not configured.
+ * Schema 127 (consolidated, OAuth required) — filter attrId=2101 = "server":
+ *   Type 344 = CoreWeave internal servers        (100% server in schema 127)
+ *   Type 347 = Osprey customer servers           (mixed, filter to server only)
+ *   Type 349 = Snipe/Heron customer servers      (mixed, filter to server only)
+ *
+ * Individual schemas (Basic auth) — no servers in schema 127 for these:
+ *   Schema 16 type 100 = Albatross servers       (100% network-device in 127)
+ *   Schema 20 type 118 = Eagle servers           (100% network-device in 127)
+ *   Schema 25 type 135 = Phoenix servers         (100% CDU in 127)
+ *
+ * Zero double-counting — each server exists in exactly one source above.
+ * Filter: attrId=2101 = "server" enforced on all types.
+ * Active: attrId=active defaults to true if attr missing (some objects lack it).
+ *
+ * Auth: OAuth2 client credentials (refreshed each run) for schema 127.
+ *       Basic (JIRA_TOKEN) for individual schemas 16/20/25.
  */
 'use strict';
 
@@ -23,18 +33,26 @@ const HOST          = 'api.atlassian.com';
 const BASE          = `/ex/jira/${CLOUD_ID}/jsm/assets/workspace/${WS}/v1`;
 const CLIENT_ID     = process.env.ASSETS_CLIENT_ID;
 const CLIENT_SECRET = process.env.ASSETS_CLIENT_SECRET;
-const WORKERS       = 4;    // concurrent page fetchers
+const WORKERS       = 4;    // concurrent page fetchers per schema
 const PAGE_SIZE     = 25;   // Jira Assets AQL page size
 
-// ── Schemas ───────────────────────────────────────────────────────────────────
-const SCHEMAS = [
-  { id:'10',  name:'coreweave',     serverType:96,  attrRack:'904',  attrActive:'1069', attrRegion:'898'  },
-  { id:'16',  name:'albatross',     serverType:100, attrRack:'938',  attrActive:'1072', attrRegion:'932'  },
-  { id:'20',  name:'eagle',         serverType:118, attrRack:'1112', attrActive:'1116', attrRegion:'1108' },
-  { id:'25',  name:'phoenix',       serverType:135, attrRack:'1352', attrActive:'1356', attrRegion:'1349' },
-  { id:'26',  name:'snipecustomer', serverType:146, attrRack:'1572', attrActive:'1575', attrRegion:'1569' },
-  // Schema 127: consolidated (323k objects) — requires OAuth Bearer
-  { id:'127', name:'consolidated',  serverType:344, attrRack:'2088', attrActive:'2092', attrRegion:'2084', oauthOnly: true },
+// ── Source definitions ────────────────────────────────────────────────────────
+const SOURCES_OAUTH = [
+  // Schema 127 — consolidated. Requires OAuth Bearer.
+  // attrRack=2088, attrActive=2092, attrRegion=2084, attrType=2101
+  { schema:'127', name:'CoreWeave (127)',      typeId:344, attrRack:'2088', attrActive:'2092', attrRegion:'2084', attrType:'2101' },
+  { schema:'127', name:'Osprey (127)',         typeId:347, attrRack:'2088', attrActive:'2092', attrRegion:'2084', attrType:'2101' },
+  { schema:'127', name:'Snipe/Heron (127)',    typeId:349, attrRack:'2088', attrActive:'2092', attrRegion:'2084', attrType:'2101' },
+];
+
+const SOURCES_BASIC = [
+  // Individual schemas — Basic auth. Servers NOT present in schema 127.
+  // Schema 16 Albatross: attrRack=938, attrActive=1072, attrRegion=932, attrType — probe showed no type attr, filter by type 100 = servers only
+  { schema:'16',  name:'Albatross (16)',       typeId:100, attrRack:'938',  attrActive:'1072', attrRegion:'932',  attrType:null },
+  // Schema 20 Eagle: attrRack=1112, attrActive=1116, attrRegion=1108
+  { schema:'20',  name:'Eagle (20)',           typeId:118, attrRack:'1112', attrActive:'1116', attrRegion:'1108', attrType:null },
+  // Schema 25 Phoenix: attrRack=1352, attrActive=1356, attrRegion=1349
+  { schema:'25',  name:'Phoenix (25)',         typeId:135, attrRack:'1352', attrActive:'1356', attrRegion:'1349', attrType:null },
 ];
 
 // ── Site mapping ──────────────────────────────────────────────────────────────
@@ -85,171 +103,156 @@ function siteFromRack(rack) {
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
-function getAuthHeader() {
-  if (CLIENT_ID && CLIENT_SECRET) {
-    return new Promise((resolve, reject) => {
-      const body  = 'grant_type=client_credentials';
-      const basic = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
-      const req   = https.request({
-        hostname: 'auth.atlassian.com', port: 443, path: '/oauth/token', method: 'POST',
-        headers: { 'Authorization': `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) },
-      }, res => {
-        let d = ''; res.on('data', c => d += c);
-        res.on('end', () => {
-          try {
-            const j = JSON.parse(d);
-            if (j.access_token) { console.log('[sync:servers] OAuth token refreshed'); resolve('Bearer ' + j.access_token); }
-            else {
-              console.warn('[sync:servers] OAuth failed:', j.error_description || j.error, '— falling back to Basic');
-              resolve('Basic ' + Buffer.from(process.env.JIRA_EMAIL + ':' + process.env.JIRA_TOKEN).toString('base64'));
-            }
-          } catch(e) { reject(e); }
-        });
+function getOAuthToken() {
+  return new Promise((resolve, reject) => {
+    const body  = 'grant_type=client_credentials';
+    const basic = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
+    const req   = https.request({
+      hostname: 'auth.atlassian.com', port: 443, path: '/oauth/token', method: 'POST',
+      headers: { 'Authorization': `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) },
+    }, res => {
+      let d = ''; res.on('data', c => d += c);
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(d);
+          if (j.access_token) resolve('Bearer ' + j.access_token);
+          else reject(new Error('OAuth failed: ' + (j.error_description || j.error || d.slice(0,100))));
+        } catch(e) { reject(e); }
       });
-      req.on('error', reject); req.write(body); req.end();
     });
-  }
-  return Promise.resolve('Basic ' + Buffer.from(
-    process.env.JIRA_EMAIL + ':' + process.env.JIRA_TOKEN
-  ).toString('base64'));
+    req.on('error', reject); req.write(body); req.end();
+  });
 }
 
-// ── HTTP helpers ──────────────────────────────────────────────────────────────
+function getBasicToken() {
+  return 'Basic ' + Buffer.from(process.env.JIRA_EMAIL + ':' + process.env.JIRA_TOKEN).toString('base64');
+}
+
+// ── HTTP page fetch ───────────────────────────────────────────────────────────
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-function fetchPage(auth, schemaId, typeId, page) {
+async function fetchPage(auth, schemaId, typeId, page, retries = 5) {
   const body = JSON.stringify({
-    qlQuery: `objectTypeId = ${typeId}`,
+    qlQuery:      `objectTypeId = ${typeId}`,
     resultPerPage: PAGE_SIZE,
     page,
     includeAttributes: true,
     objectSchemaId: String(schemaId),
   });
-  return new Promise(resolve => {
-    const req = https.request({
-      hostname: HOST, port: 443, path: `${BASE}/object/aql`, method: 'POST',
-      headers: { 'Accept':'application/json','Content-Type':'application/json','Authorization':auth,'Content-Length':Buffer.byteLength(body) },
-      timeout: 30000,
-    }, res => {
-      let d = ''; res.on('data', c => d += c);
-      res.on('end', () => {
-        try { resolve({ status: res.statusCode, data: JSON.parse(d) }); }
-        catch(e) { resolve({ status: res.statusCode, data: { values: [] } }); }
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const result = await new Promise(resolve => {
+      const req = https.request({
+        hostname: HOST, port: 443, path: `${BASE}/object/aql`, method: 'POST',
+        headers: { 'Accept':'application/json','Content-Type':'application/json','Authorization':auth,'Content-Length':Buffer.byteLength(body) },
+        timeout: 30000,
+      }, res => {
+        let d = ''; res.on('data', c => d += c);
+        res.on('end', () => {
+          try { resolve({ status: res.statusCode, data: JSON.parse(d) }); }
+          catch(e) { resolve({ status: res.statusCode, data: { values: [] } }); }
+        });
       });
+      req.on('error',   () => resolve({ status: 0,   data: { values: [] } }));
+      req.on('timeout', () => { req.destroy(); resolve({ status: 0, data: { values: [] } }); });
+      req.write(body); req.end();
     });
-    req.on('error',   () => resolve({ status: 0,   data: { values: [] } }));
-    req.on('timeout', () => { req.destroy(); resolve({ status: 0, data: { values: [] } }); });
-    req.write(body); req.end();
-  });
-}
 
-// Fetch a single page with automatic retry on 429
-async function fetchPageRetry(auth, schemaId, typeId, page, maxRetries = 5) {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const r = await fetchPage(auth, schemaId, typeId, page);
-    if (r.status !== 429) return r;
-    const wait = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s, 8s, 16s
-    console.warn(`[sync:servers] 429 on page ${page}, retrying in ${wait}ms (attempt ${attempt + 1}/${maxRetries})`);
-    await sleep(wait);
+    if (result.status === 429) {
+      const wait = 1000 * Math.pow(2, attempt);
+      console.warn(`[sync:servers] 429 rate limit on page ${page}, waiting ${wait}ms...`);
+      await sleep(wait);
+      continue;
+    }
+    return result;
   }
-  return { status: 429, data: { values: [] } };
+  return { status: 429, data: { values: [], isLast: true } };
 }
 
-// ── Object → site ─────────────────────────────────────────────────────────────
-function objectSite(obj, schema) {
-  let rack = '', region = '', active = null;
+// ── Parse object → site ───────────────────────────────────────────────────────
+function objectSite(obj, source) {
+  let rack = '', region = '', active = null, assetType = '';
+
   for (const a of (obj.attributes || [])) {
     const id  = String(a.objectTypeAttributeId);
     const val = (a.objectAttributeValues || [])[0];
     const v   = val ? (val.displayValue || val.value || '') : '';
-    if (id === schema.attrRack)   rack   = String(v);
-    if (id === schema.attrRegion) region = String(v);
-    if (id === schema.attrActive) active = String(v).toLowerCase() === 'true';
+    if (id === source.attrRack)   rack      = String(v);
+    if (id === source.attrRegion) region    = String(v);
+    if (id === source.attrActive) active    = String(v).toLowerCase() === 'true';
+    if (source.attrType && id === source.attrType) assetType = String(v).toLowerCase();
   }
+
+  // For schema 127 sources: only count if asset type is "server"
+  if (source.attrType && assetType !== 'server') return null;
+
+  // Skip if explicitly inactive
   if (active === false) return null;
+
   return siteFromRack(rack) || (region ? RACK_OVERRIDES[region.trim()] : null);
 }
 
-// ── Worker queue ──────────────────────────────────────────────────────────────
-// Fetch all pages of a schema using N concurrent workers.
-// Workers pull page numbers from a shared queue, stopping when the queue is
-// empty OR when a fetched page signals it is the last page.
-async function fetchAllPages(auth, schema, siteCounts, onProgress) {
-  // Fetch page 0 first to check if multi-page and get first results
-  const first = await fetchPageRetry(auth, schema.id, schema.serverType, 0);
+// ── Fetch all pages for one source using worker queue ────────────────────────
+async function fetchAllPages(auth, source, siteCounts, onProgress) {
+  // Get page 0 first
+  const first = await fetchPage(auth, source.schema, source.typeId, 0);
   if (first.status !== 200) {
-    console.warn(`[sync:servers] ${schema.name}: HTTP ${first.status} on page 0 — skipping`);
+    console.warn(`[sync:servers] ${source.name}: HTTP ${first.status} on page 0 — skipping`);
     return 0;
   }
 
   let counted = 0;
   for (const obj of (first.data?.values || [])) {
-    const site = objectSite(obj, schema);
+    const site = objectSite(obj, source);
     if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
   }
 
   const isLast = first.data?.isLast || first.data?.last || (first.data?.values || []).length < PAGE_SIZE;
   if (isLast) {
-    console.log(`[sync:servers] ${schema.name}: ✓ ${counted} active servers (1 page)`);
+    console.log(`[sync:servers] ${source.name}: ✓ ${counted} active servers (1 page)`);
     return counted;
   }
 
-  // Probe to estimate page count for logging
-  const probe = await fetchPageRetry(auth, schema.id, schema.serverType, 9999);
-  const estimatedPages = (probe.status === 200 && (probe.data?.values || []).length > 0) ? '>250,000 objects' :
-    ((await fetchPageRetry(auth, schema.id, schema.serverType, 999)).status === 200 &&
-     ((await fetchPageRetry(auth, schema.id, schema.serverType, 999)).data?.values || []).length > 0
-    ) ? '>25,000 objects' : '~thousands of objects';
+  // Multi-page: use worker queue
+  let nextPage       = 1;
+  let lastPage       = null;
+  let pagesDone      = 1;
+  let finished       = false;
 
-  console.log(`[sync:servers] ${schema.name}: multi-page (${estimatedPages}), starting ${WORKERS} workers...`);
-
-  // Queue of page numbers to fetch — dynamically extended as we discover more pages
-  let nextPage     = 1;       // next page to enqueue
-  let lastKnownPage = null;   // set when we find the last page
-  let pagesDone    = 1;       // page 0 already done
-  let done         = false;
-
-  // Worker function
   async function worker() {
     while (true) {
-      // Grab next page from queue
-      if (done) return;
-      if (lastKnownPage !== null && nextPage > lastKnownPage) return;
+      if (finished) return;
+      if (lastPage !== null && nextPage > lastPage) return;
       const page = nextPage++;
 
-      const r = await fetchPageRetry(auth, schema.id, schema.serverType, page);
+      const r      = await fetchPage(auth, source.schema, source.typeId, page);
       const values = (r.status === 200 && r.data?.values) ? r.data.values : [];
 
       for (const obj of values) {
-        const site = objectSite(obj, schema);
+        const site = objectSite(obj, source);
         if (site) { siteCounts[site] = (siteCounts[site] || 0) + 1; counted++; }
       }
       pagesDone++;
 
-      // Detect last page
-      if (r.data?.isLast || r.data?.last || values.length < PAGE_SIZE || r.status !== 200) {
-        // Only set lastKnownPage if this page is before what we thought was last
-        if (lastKnownPage === null || page < lastKnownPage) {
-          lastKnownPage = page;
-        }
+      // Detect end of results
+      if (values.length < PAGE_SIZE || r.data?.isLast || r.data?.last || r.status !== 200) {
+        if (lastPage === null || page < lastPage) lastPage = page;
+        finished = true;
+        return;
       }
 
-      // Progress every 100 pages
       if (pagesDone % 100 === 0) {
         const total = Object.values(siteCounts).reduce((a, b) => a + b, 0);
-        console.log(`[sync:servers] ${schema.name}: ${pagesDone} pages, ${counted.toLocaleString()} active servers so far (running total: ${total.toLocaleString()})`);
-        onProgress?.({ done: pagesDone, total: lastKnownPage, servers: total, status: `Scanning ${schema.name}...` });
+        console.log(`[sync:servers] ${source.name}: ${pagesDone} pages done, ${counted.toLocaleString()} servers (running total: ${total.toLocaleString()})`);
+        onProgress?.({ done: pagesDone, total: null, servers: total, status: `Scanning ${source.name}...` });
       }
 
-      // Small delay to avoid rate limiting
-      await sleep(50);
+      await sleep(50); // gentle rate limit
     }
   }
 
-  // Run WORKERS workers concurrently until all pages are done
   await Promise.all(Array.from({ length: WORKERS }, () => worker()));
 
-  console.log(`[sync:servers] ${schema.name}: ✓ ${counted.toLocaleString()} active servers (${pagesDone} pages)`);
+  console.log(`[sync:servers] ${source.name}: ✓ ${counted.toLocaleString()} active servers (${pagesDone} pages)`);
   return counted;
 }
 
@@ -261,24 +264,44 @@ const upsertMany = db.transaction(rows => { for (const r of rows) upsertServerCo
 
 // ── Main sync ─────────────────────────────────────────────────────────────────
 async function syncServers(onProgress) {
-  const useOAuth = !!(CLIENT_ID && CLIENT_SECRET);
-  console.log(`[sync:servers] Starting — Auth: ${useOAuth ? 'OAuth2 (client credentials)' : 'Basic (JIRA_TOKEN)'}`);
-  const auth = await getAuthHeader();
-  const now  = new Date().toISOString();
+  const hasOAuth = !!(CLIENT_ID && CLIENT_SECRET);
+  console.log(`[sync:servers] ─────────────────────────────────────────`);
+  console.log(`[sync:servers] Starting server sync`);
+  console.log(`[sync:servers] OAuth available: ${hasOAuth}`);
 
-  const logRow = db.prepare(`INSERT INTO sync_log (type, status, started_at) VALUES ('servers', 'running', ?)`).run(now);
-  const logId  = logRow.lastInsertRowid;
+  if (!hasOAuth) {
+    console.error('[sync:servers] ERROR: ASSETS_CLIENT_ID and ASSETS_CLIENT_SECRET required');
+    throw new Error('OAuth credentials required for server sync');
+  }
+
+  console.log(`[sync:servers] Sources:`);
+  console.log(`[sync:servers]   Schema 127 (OAuth): CoreWeave(344) + Osprey(347) + Snipe/Heron(349) — filtered to servers only`);
+  console.log(`[sync:servers]   Schema 16  (Basic): Albatross(100) — no servers in schema 127`);
+  console.log(`[sync:servers]   Schema 20  (Basic): Eagle(118) — no servers in schema 127`);
+  console.log(`[sync:servers]   Schema 25  (Basic): Phoenix(135) — no servers in schema 127`);
+  console.log(`[sync:servers] ─────────────────────────────────────────`);
+
+  const oauthToken = await getOAuthToken();
+  console.log(`[sync:servers] OAuth token refreshed`);
+  const basicToken = getBasicToken();
+
+  const now     = new Date().toISOString();
+  const logRow  = db.prepare(`INSERT INTO sync_log (type, status, started_at) VALUES ('servers', 'running', ?)`).run(now);
+  const logId   = logRow.lastInsertRowid;
 
   const siteCounts = {};
   let grandTotal   = 0;
 
   try {
-    for (const schema of SCHEMAS) {
-      if (schema.oauthOnly && !useOAuth) {
-        console.log(`[sync:servers] Skipping ${schema.name} — requires OAuth (set ASSETS_CLIENT_ID + ASSETS_CLIENT_SECRET)`);
-        continue;
-      }
-      const count = await fetchAllPages(auth, schema, siteCounts, onProgress);
+    // Schema 127 sources via OAuth
+    for (const source of SOURCES_OAUTH) {
+      const count = await fetchAllPages(oauthToken, source, siteCounts, onProgress);
+      grandTotal += count;
+    }
+
+    // Individual schema sources via Basic auth
+    for (const source of SOURCES_BASIC) {
+      const count = await fetchAllPages(basicToken, source, siteCounts, onProgress);
       grandTotal += count;
     }
 
@@ -288,10 +311,14 @@ async function syncServers(onProgress) {
     db.prepare(`UPDATE sync_log SET status='success', completed_at=?, records_synced=? WHERE id=?`)
       .run(new Date().toISOString(), grandTotal, logId);
 
+    console.log(`[sync:servers] ─────────────────────────────────────────`);
     console.log(`[sync:servers] ✓ COMPLETE: ${grandTotal.toLocaleString()} active servers across ${rows.length} sites`);
+    console.log(`[sync:servers] Top 10 sites by server count:`);
     rows.sort((a, b) => b.count - a.count).slice(0, 10).forEach(r =>
-      console.log(`[sync:servers]   ${r.site}: ${r.count.toLocaleString()}`)
+      console.log(`[sync:servers]   ${r.site.padEnd(12)} ${r.count.toLocaleString()}`)
     );
+    console.log(`[sync:servers] ─────────────────────────────────────────`);
+
     return { totalActive: grandTotal, sitesCount: rows.length };
 
   } catch (err) {
