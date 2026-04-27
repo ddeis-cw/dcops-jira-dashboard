@@ -36,7 +36,8 @@ const HOST          = 'api.atlassian.com';
 const BASE          = `/ex/jira/${CLOUD_ID}/jsm/assets/workspace/${WS}/v1`;
 const CLIENT_ID     = process.env.ASSETS_CLIENT_ID;
 const CLIENT_SECRET = process.env.ASSETS_CLIENT_SECRET;
-const CONCURRENCY   = 8;
+const CONCURRENCY   = 2;    // keep low to avoid 429 rate limiting
+const INTER_DELAY   = 300;  // ms between batches — prevents rate limit bursts
 
 // ── Source definitions ────────────────────────────────────────────────────────
 const SOURCES = [
@@ -267,7 +268,7 @@ async function scanSource(auth, source, siteCounts, onProgress) {
       onProgress?.({ done, total, servers: running, status: `Scanning ${source.name}...` });
     }
 
-    await sleep(50); // gentle throttle
+    await sleep(INTER_DELAY);
   }
 
   console.log(`[sync:servers] ${source.name}: ✓ ${counted.toLocaleString()} active servers`);
