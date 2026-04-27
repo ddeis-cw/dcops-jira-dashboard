@@ -20,7 +20,7 @@ const CDN_GLOBALS = {
 };
 
 esbuild.build({
-  entryPoints: ['public/HeadcountPlanning.jsx'],
+  entryPoints: ['public/DCOPSJiraDashboard.jsx'],
   bundle:      true,
   outfile:     'public/bundle.js',
   format:      'iife',

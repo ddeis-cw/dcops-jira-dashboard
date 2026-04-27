@@ -137,8 +137,8 @@ function triggerSync(type, fn) {
     // Start async — respond immediately
     res.json({ message: `${type} sync started`, type });
     runSync(type, fn, d => {
-      // Progress logged to server console only
-      if (d.done % 500 === 0) console.log(`[sync:${type}] ${d.done}${d.total ? '/' + d.total : ''}`);
+      // Log every progress callback so docker compose logs shows real-time status
+      if (d.status) console.log(`[sync:${type}] ${d.status}${d.servers ? ' | ' + d.servers.toLocaleString() + ' servers' : ''}${d.done && d.total ? ' (' + d.done + '/' + d.total + ' pages)' : ''}`);
     }).catch(e => console.error(`[sync:${type}] Error:`, e.message));
   };
 }
