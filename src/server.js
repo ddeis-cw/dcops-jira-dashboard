@@ -87,10 +87,18 @@ app.get('/api/employees', (req, res) => {
   const employees = db.prepare('SELECT * FROM employees ORDER BY name').all();
   // Return as { "Name": "US-DTN" } map for dashboard compatibility
   const map = {};
+  const dctSet = [];
+  const dctBySite = {};
   for (const e of employees) {
-    if (e.site) map[e.name] = e.site;
+    if (e.site) {
+      map[e.name] = e.site;
+      if (e.is_dct) {
+        dctSet.push(e.name);
+        dctBySite[e.site] = (dctBySite[e.site] || 0) + 1;
+      }
+    }
   }
-  res.json({ employees: map, total: employees.length });
+  res.json({ employees: map, dctList: dctSet, dctBySite, total: employees.length });
 });
 
 // ── API: Servers ──────────────────────────────────────────────────────────────
