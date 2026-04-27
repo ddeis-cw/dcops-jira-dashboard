@@ -40,12 +40,11 @@ const ATTR_TITLE   = '3294';  // Job title → used for DCT detection
 const ATTR_STATUS  = '3297';  // "Active" / "Inactive"
 const ATTR_DC_LOC  = '3304';  // DC Location (linked object, label = "US-DTN01")
 
-// objectId range for People schema 128 — scanned empirically
-// Sample showed IDs from ~873237. Full 3,887 objects need wider range.
+// objectId range — wider scan to catch all 3,887 people objects
 const RANGE_START = 860000;
-const RANGE_END   = 900000;
+const RANGE_END   = 910000;
 const CHUNK       = 15;
-const CONCURRENCY = 4;  // conservative to avoid 429s
+const CONCURRENCY = 4;
 
 // ── DCT title detection ───────────────────────────────────────────────────────
 const DCT_TITLE_KEYWORDS = [
@@ -148,8 +147,8 @@ function canonSite(raw) {
 
 // ── DB ────────────────────────────────────────────────────────────────────────
 const upsertEmployee = db.prepare(`
-  INSERT OR REPLACE INTO employees (name, site, is_dct, is_active, synced_at)
-  VALUES (@name, @site, @is_dct, @is_active, @synced_at)
+  INSERT OR REPLACE INTO employees (name, site, is_dct, is_active, title, synced_at)
+  VALUES (@name, @site, @is_dct, @is_active, @title, @synced_at)
 `);
 const upsertMany = db.transaction(rows => {
   for (const row of rows) upsertEmployee.run(row);
@@ -205,8 +204,7 @@ async function syncEmployees(onProgress) {
             const fullName = [first, last].filter(Boolean).join(' ');
             if (fullName && isActive && site) {
               results.set(fullName, { site, title, email, is_dct: isDCTTitle(title) });
-            }
-          }
+            }          }
         }
         chunksDone++;
       }));
@@ -221,6 +219,7 @@ async function syncEmployees(onProgress) {
       site:      d.site,
       is_dct:    d.is_dct ? 1 : 0,
       is_active: 1,
+      title:     d.title || null,
       synced_at: now,
     }));
 
