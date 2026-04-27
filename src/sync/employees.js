@@ -48,6 +48,7 @@ const CONCURRENCY = 4;
 
 // ── DCT title detection ───────────────────────────────────────────────────────
 const DCT_TITLE_KEYWORDS = [
+  // American spelling
   'data center technician',
   'data center engineer',
   'data center lead',
@@ -55,10 +56,23 @@ const DCT_TITLE_KEYWORDS = [
   'data center specialist',
   'data center operations',
   'data center field',
+  'data center site',
+  // British/European spelling
+  'data centre technician',
+  'data centre engineer',
+  'data centre lead',
+  'data centre manager',
+  'data centre specialist',
+  'data centre operations',
+  'data centre field',
+  'data centre site',
+  // Other DC ops titles
   'dc operations',
   'dct',
   'field operations technician',
   'infrastructure technician',
+  'onsite build lead',
+  'area data cent',  // catches both "area data center" and "area data centre"
 ];
 
 function isDCTTitle(title) {
