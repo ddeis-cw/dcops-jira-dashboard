@@ -912,7 +912,7 @@ export default function MBRDashboard() {
     if (!period.start || !period.end) return;
     const PAGE = 5000;
 
-    setFetchStatus("fetching"); setErrorMsg(""); setTickets([]); setProgress({ done:0, total:null });
+    setFetchStatus("fetching"); setErrorMsg(""); setTickets([]); setSiteProjectMap({}); setProgress({ done:0, total:null });
 
     try {
       // Load live DCT list from employees API
