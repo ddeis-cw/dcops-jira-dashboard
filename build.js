@@ -34,17 +34,35 @@ const cdnPlugin = {
   },
 };
 
+// MBR plugin: only externalize React/ReactDOM, bundle Recharts directly
+const mbrPlugin = {
+  name: 'cdn-globals-mbr',
+  setup(build) {
+    build.onResolve({ filter: /^(react|react-dom)(\/.*)?$/ }, args => ({
+      path:      args.path,
+      namespace: 'cdn-globals',
+    }));
+    build.onLoad({ filter: /.*/, namespace: 'cdn-globals' }, ({ path }) => {
+      const global = CDN_GLOBALS[path];
+      if (!global) return { contents: 'module.exports = {}', loader: 'js' };
+      return {
+        contents: `module.exports = globalThis.${global} || {};`,
+        loader:   'js',
+      };
+    });
+  },
+};
+
 const shared = {
   bundle:  true,
   format:  'iife',
   define:  { 'process.env.NODE_ENV': '"production"' },
   logLevel:'info',
-  plugins: [cdnPlugin],
 };
 
 Promise.all([
-  esbuild.build({ ...shared, entryPoints: ['public/DCOPSJiraDashboard.jsx'], outfile: 'public/bundle.js',     globalName: 'DCOPSApp' }),
-  esbuild.build({ ...shared, entryPoints: ['public/MBRDashboard.jsx'],       outfile: 'public/mbr-bundle.js', globalName: 'MBRApp'   }),
+  esbuild.build({ ...shared, entryPoints: ['public/DCOPSJiraDashboard.jsx'], outfile: 'public/bundle.js',     globalName: 'DCOPSApp', plugins: [cdnPlugin] }),
+  esbuild.build({ ...shared, entryPoints: ['public/MBRDashboard.jsx'],       outfile: 'public/mbr-bundle.js', globalName: 'MBRApp',   plugins: [mbrPlugin] }),
 ]).then(() => {
   const main = fs.statSync('public/bundle.js').size;
   const mbr  = fs.statSync('public/mbr-bundle.js').size;
