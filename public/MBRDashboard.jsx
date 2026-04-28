@@ -1138,18 +1138,16 @@ export default function MBRDashboard() {
       .filter(p => p.total > 0)
       .sort((a,b) => b.total - a.total);
 
-    // DCT closed tickets per site broken down by Jira project
+    // All closed tickets per site broken down by Jira project (all assignees)
     const dctBySiteRaw = {};
-    dctTickets.forEach(t => {
+    tickets.forEach(t => {
       if (!(t.location in SITE_LABELS)) return;
       if (!dctBySiteRaw[t.location]) {
         const row = { site:t.location, total:0 };
         PROJECT_KEYS.forEach(p => { row[PROJECT_LABELS[p]] = 0; });
         dctBySiteRaw[t.location] = row;
       }
-      // Only count closed tickets per project
       if (t.group === "Closed") {
-        // t.project is now a canonical PROJECT_KEYS string — direct lookup
         const label = PROJECT_LABELS[t.project] || null;
         if (label) dctBySiteRaw[t.location][label]++;
       }
@@ -1345,7 +1343,7 @@ export default function MBRDashboard() {
 
           {/* Row 1: DCT Closed Tickets by Site, colored by Project */}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 300px", gap:16, marginBottom:16, alignItems:"start" }}>
-            <Section title="DCT Closed Tickets · By Site &amp; Project" subtitle={`${metrics.dctSiteData.length} sites · ${period.label} · DCT members only`}>
+            <Section title="Closed Tickets · By Site &amp; Project" subtitle={`${metrics.dctSiteData.length} sites · ${period.label} · all projects`}>
               <ResponsiveContainer width="100%" height={Math.max(300, metrics.dctSiteData.length * 26)}>
                 <BarChart data={metrics.dctSiteData} layout="vertical" margin={{ left:0, right:50, top:0, bottom:0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke={C.light} horizontal={false}/>
