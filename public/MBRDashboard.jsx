@@ -947,6 +947,16 @@ export default function MBRDashboard() {
         setProgress({ done: raw.length, total });
       }
 
+      const PROJECT_MAP = {
+        'sda': 'service-desk-albatross',
+        'sde': 'service-desk-eagle',
+        'sdh': 'service-desk-heron',
+        'sdo': 'service-desk-osprey',
+        'sdp': 'service-desk-phoenix',
+        'sds': 'service-desk-snipecustomer',
+        'do':  'dct-ops',
+      };
+
       const parsed = raw.map(t => {
         const slaHours = t.sla_seconds ? t.sla_seconds / 3600 : null;
         let fallbackHours = null;
@@ -959,8 +969,8 @@ export default function MBRDashboard() {
           summary:         t.summary || "",
           assignee:        t.assignee || "Unassigned",
           isDct:           allDct.has(t.assignee || ""),
-          project:         t.project || "unknown",
-          projectName:     t.project || "",
+          project:         PROJECT_MAP[t.project] || t.project || "unknown",
+          projectName:     PROJECT_MAP[t.project] || t.project || "",
           projectKey:      (t.key || "").split("-")[0].toUpperCase(),
           status:          t.status || "",
           group:           getStatusGroup(t.status || ""),
@@ -968,7 +978,7 @@ export default function MBRDashboard() {
           issueType:       t.issue_type || "",
           created:         (t.created_at || "").slice(0, 10),
           resolved:        t.resolved_at || null,
-          location:        t.location || "Other",
+          location:        (t.location || "Other").replace(/\d{2}(-.*)?$/, "") || "Other",
           mttrHours:       slaHours ?? fallbackHours,
           hasSla:          slaHours != null,
           maintType:       t.maintenance_type || null,
