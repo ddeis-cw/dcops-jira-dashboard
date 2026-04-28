@@ -1522,6 +1522,7 @@ export default function App() {
   const [trendsRegion, setTrendsRegion] = useState("All");
   const [trendsSort,   setTrendsSort]   = useState("vol");
   const [trendsLoading,setTrendsLoading]= useState(false);
+  const [trendsSite,   setTrendsSite]   = useState("");
 
   // Jira fetch state
   const [fetchProgress, setFetchProgress] = useState(null); // { done, total, status }
@@ -2468,9 +2469,7 @@ Jira version: ${d.version || "unknown"}`);
             .catch(()=>setTrendsLoading(false));
         };
 
-        // Derive selected site from trendsData or first available
         const siteKeys = trendsData ? Object.keys(trendsData.sites).sort() : [];
-        const [trendsSite, setTrendsSite] = useState("");
         const activeSite = trendsSite && siteKeys.includes(trendsSite) ? trendsSite : siteKeys[0] || "";
         const sd    = trendsData && activeSite ? (trendsData.sites[activeSite] || {}) : {};
         const labels = trendsData ? trendsData.labels : [];
