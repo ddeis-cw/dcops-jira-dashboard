@@ -2111,7 +2111,7 @@ Jira version: ${d.version || "unknown"}`);
             setActiveTab(t);
             if(t==="trends" && !trendsData && !trendsLoading){
               setTrendsLoading(true);
-              fetch(`/api/trends?window=${trendsWin}`)
+              fetch(`/api/trends?window=30d`)
                 .then(r=>r.json()).then(d=>{setTrendsData(d);setTrendsLoading(false);})
                 .catch(()=>setTrendsLoading(false));
             }
@@ -2470,7 +2470,9 @@ Jira version: ${d.version || "unknown"}`);
         };
 
         const siteKeys = trendsData ? Object.keys(trendsData.sites).sort() : [];
-        const activeSite = trendsSite && siteKeys.includes(trendsSite) ? trendsSite : siteKeys[0] || "";
+        // Auto-select first site when data first loads
+        if(trendsData && !trendsSite && siteKeys.length) setTrendsSite(siteKeys[0]);
+        const activeSite = (trendsSite && siteKeys.includes(trendsSite)) ? trendsSite : (siteKeys[0] || "");
         const sd    = trendsData && activeSite ? (trendsData.sites[activeSite] || {}) : {};
         const labels = trendsData ? trendsData.labels : [];
         const pts    = labels.length;
@@ -2524,8 +2526,10 @@ Jira version: ${d.version || "unknown"}`);
                   fontSize:12,padding:"5px 10px",borderRadius:6,border:"1px solid #334155",
                   background:"#1e293b",color:"#f1f5f9",cursor:"pointer",minWidth:110,
                 }}>
-                  {siteKeys.length===0
-                    ? <option>— load data —</option>
+                  {trendsLoading
+                    ? <option>Loading…</option>
+                    : !trendsData
+                    ? <option>— click Load Data —</option>
                     : siteKeys.map(s=><option key={s} value={s}>{s}</option>)
                   }
                 </select>
