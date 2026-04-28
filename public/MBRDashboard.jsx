@@ -114,6 +114,14 @@ const PROJECT_LABELS = {
   "service-desk-phoenix":      "Phoenix",
   "service-desk-snipecustomer":"SnipeCust",
   "dct-ops":                   "DCT-Ops",
+  // Short keys stored in local DB
+  "sda": "Albatross",
+  "sde": "Eagle",
+  "sdh": "Heron",
+  "sdo": "Osprey",
+  "sdp": "Phoenix",
+  "sds": "SnipeCust",
+  "do":  "DCT-Ops",
 };
 const PROJECT_KEYS = Object.keys(PROJECT_LABELS);
 
