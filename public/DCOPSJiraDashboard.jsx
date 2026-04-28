@@ -2452,10 +2452,10 @@ Jira version: ${d.version || "unknown"}`);
           {k:"do",  label:"DO",  c:"#3b82f6", dash:[]},
           {k:"sda", label:"SDA", c:"#22c55e", dash:[6,3]},
           {k:"sdp", label:"SDP", c:"#eab308", dash:[3,3]},
-          {k:"sdo", label:"OSP", c:"#f97316", dash:[8,3,2,3]},
-          {k:"sde", label:"EGL", c:"#10b981", dash:[4,4]},
-          {k:"sdh", label:"HRN", c:"#06b6d4", dash:[2,2]},
-          {k:"sds", label:"SNP", c:"#a855f7", dash:[6,2]},
+          {k:"sdo", label:"SDO", c:"#f97316", dash:[8,3,2,3]},
+          {k:"sde", label:"SDE", c:"#10b981", dash:[4,4]},
+          {k:"sdh", label:"SDH", c:"#06b6d4", dash:[2,2]},
+          {k:"sds", label:"SDN", c:"#a855f7", dash:[6,2]},
         ];
         const WINS = [
           {k:"1d",lb:"1d"},{k:"7d",lb:"7d"},{k:"30d",lb:"30d"},
