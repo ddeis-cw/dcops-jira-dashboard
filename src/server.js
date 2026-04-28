@@ -144,6 +144,52 @@ app.get('/api/sites', (req, res) => {
   res.json({ sites, total: sites.length });
 });
 
+// ── API: Tickets by site+project (uses employee site as fallback location) ───
+app.get('/api/tickets/by-site-project', (req, res) => {
+  const { date_from, date_to, date_field = 'created_at' } = req.query;
+  const col = ['created_at','resolved_at'].includes(date_field) ? date_field : 'created_at';
+
+  const args = [];
+  let where = `WHERE t.status IN ('Closed','Done','Resolved','Completed')
+    AND (t.location IS NOT NULL OR e.site IS NOT NULL)`;
+
+  if (date_from) { where += ` AND t.${col} >= ?`; args.push(date_from); }
+  if (date_to)   { where += ` AND t.${col} <= ?`; args.push(date_to + 'T23:59:59'); }
+
+  try {
+    const rows = db.prepare(`
+      SELECT
+        COALESCE(
+          CASE WHEN t.location IS NOT NULL AND t.location != '' THEN
+            REPLACE(t.location, SUBSTR(t.location, LENGTH(t.location)-1), '')
+          END,
+          e.site
+        ) AS site,
+        t.project,
+        COUNT(*) AS n
+      FROM tickets t
+      LEFT JOIN employees e ON t.assignee = e.name
+      ${where}
+      GROUP BY site, t.project
+      ORDER BY n DESC
+    `).all(...args);
+
+    // Pivot into { site: { project: count } } map
+    const map = {};
+    rows.forEach(r => {
+      if (!r.site) return;
+      // Strip trailing 2-digit suffix: US-DTN01 → US-DTN
+      const site = r.site.replace(/\d{2}$/, '');
+      if (!map[site]) map[site] = {};
+      map[site][r.project] = (map[site][r.project] || 0) + r.n;
+    });
+
+    res.json({ data: map, total: Object.keys(map).length });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── API: Sync triggers ────────────────────────────────────────────────────────
 function triggerSync(type, fn) {
   return (req, res) => {

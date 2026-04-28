@@ -901,7 +901,7 @@ export default function MBRDashboard() {
   const [errorMsg,      setErrorMsg]      = useState("");
   const [tickets,       setTickets]       = useState([]);
   const [progress,      setProgress]      = useState({ done:0, total:null });
-  const [showConfig,    setShowConfig]    = useState(false);
+  const [siteProjectMap, setSiteProjectMap] = useState({});
 
   const period = useCustom
     ? { label:`${customStart} → ${customEnd}`, short:`${customStart}–${customEnd}`, start:customStart, end:customEnd }
@@ -991,6 +991,15 @@ export default function MBRDashboard() {
       parsed.forEach(t => { projCounts[t.project] = (projCounts[t.project]||0)+1; });
       console.log("[MBR] Project breakdown:", projCounts);
       console.log("[MBR] DCT tickets:", parsed.filter(t=>t.isDct).length, "of", parsed.length);
+
+      // Fetch site+project breakdown (uses employee site as location fallback)
+      const spParams = new URLSearchParams({
+        date_from: period.start, date_to: period.end,
+        date_field: dbField,
+      });
+      const spRes = await fetch(`/api/tickets/by-site-project?${spParams}`);
+      const spData = spRes.ok ? await spRes.json() : { data: {} };
+      setSiteProjectMap(spData.data || {});
 
       setTickets(parsed);
       setFetchStatus("done");
@@ -1138,20 +1147,17 @@ export default function MBRDashboard() {
       .filter(p => p.total > 0)
       .sort((a,b) => b.total - a.total);
 
-    // All closed tickets per site broken down by Jira project (all assignees)
+    // All closed tickets per site broken down by Jira project (uses employee site fallback)
     const dctBySiteRaw = {};
-    tickets.forEach(t => {
-      if (!(t.location in SITE_LABELS)) return;
-      if (!dctBySiteRaw[t.location]) {
-        const row = { site:t.location, total:0 };
-        PROJECT_KEYS.forEach(p => { row[PROJECT_LABELS[p]] = 0; });
-        dctBySiteRaw[t.location] = row;
-      }
-      if (t.group === "Closed") {
-        const label = PROJECT_LABELS[t.project] || null;
-        if (label) dctBySiteRaw[t.location][label]++;
-      }
-      dctBySiteRaw[t.location].total++;
+    Object.entries(siteProjectMap).forEach(([site, projects]) => {
+      if (!(site in SITE_LABELS)) return;
+      const row = { site, total: 0 };
+      PROJECT_KEYS.forEach(p => { row[PROJECT_LABELS[p]] = 0; });
+      Object.entries(projects).forEach(([proj, count]) => {
+        const label = PROJECT_LABELS[proj];
+        if (label) { row[label] = count; row.total += count; }
+      });
+      if (row.total > 0) dctBySiteRaw[site] = row;
     });
     const dctSiteData = Object.entries(dctBySiteRaw)
       .sort((a,b)=>b[1].total-a[1].total)
@@ -1169,7 +1175,7 @@ export default function MBRDashboard() {
       activeSites:siteData.length, fmtMttr, mttrColor, mttrSource,
       dctTickets, dctClosed, dctPct:tickets.length?((dctClosed/tickets.length)*100).toFixed(1):"0",
       projectData, dctSiteData, totalDct:dctTickets.length };
-  }, [tickets]);
+  }, [tickets, siteProjectMap]);
 
   const headerRef = useRef(null);
   const kpiRef    = useRef(null);
@@ -1343,30 +1349,6 @@ export default function MBRDashboard() {
 
           {/* Row 1: DCT Closed Tickets by Site, colored by Project */}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 300px", gap:16, marginBottom:16, alignItems:"start" }}>
-            <Section title="Ticket Volume · By Project" subtitle={`${period.label} · all tickets`}>
-              {metrics.projectData.filter(p=>p.total>0).map((p,i) => {
-                const maxTotal = Math.max(...metrics.projectData.map(x=>x.total));
-                const closePct = p.total ? Math.round(p.closed/p.total*100) : 0;
-                const pc = closePct>=90?C.green:closePct>=70?C.amber:C.red;
-                const colors = [C.blue,C.teal,C.purple,C.orange||'#f97316',C.red,C.green,C.slate];
-                const barColor = colors[i % colors.length];
-                return (
-                  <div key={p.key} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
-                    <div style={{ width:130, fontSize:11, fontWeight:600, color:C.text, textAlign:'right', flexShrink:0 }}>{p.label}</div>
-                    <div style={{ flex:1, background:C.light, borderRadius:3, height:18, position:'relative' }}>
-                      <div style={{ height:'100%', borderRadius:3, background:barColor, width:`${Math.round(p.total/maxTotal*100)}%`, opacity:.85 }}/>
-                      <div style={{ height:'100%', borderRadius:3, background:barColor, width:`${Math.round(p.closed/maxTotal*100)}%`, position:'absolute', top:0, left:0, opacity:1 }}/>
-                    </div>
-                    <div style={{ width:70, fontSize:11, color:C.text, flexShrink:0 }}>{p.total.toLocaleString()} total</div>
-                    <div style={{ width:60, fontSize:11, color:pc, fontWeight:700, flexShrink:0 }}>{closePct}% closed</div>
-                  </div>
-                );
-              })}
-              <div style={{ fontSize:10, color:C.slate, marginTop:8 }}>
-                Darker bar = closed tickets · lighter bar = total tickets
-              </div>
-            </Section>
-
             <Section title="Closed Tickets · By Site &amp; Project" subtitle={`${metrics.dctSiteData.length} sites · ${period.label} · all projects`}>
               <ResponsiveContainer width="100%" height={Math.max(300, metrics.dctSiteData.length * 26)}>
                 <BarChart data={metrics.dctSiteData} layout="vertical" margin={{ left:0, right:50, top:0, bottom:0 }}>
