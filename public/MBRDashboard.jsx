@@ -901,6 +901,7 @@ export default function MBRDashboard() {
   const [errorMsg,      setErrorMsg]      = useState("");
   const [tickets,       setTickets]       = useState([]);
   const [progress,      setProgress]      = useState({ done:0, total:null });
+  const [showConfig,    setShowConfig]    = useState(false);
   const [siteProjectMap, setSiteProjectMap] = useState({});
 
   const period = useCustom
