@@ -177,6 +177,27 @@ app.get('/api/sync/history', (req, res) => {
 });
 
 // ── Catch-all: serve React app ────────────────────────────────────────────────
+// ── Jira API proxy for MBR dashboard ─────────────────────────────────────────
+// MBRDashboard fetches Jira directly — proxy it server-side to avoid CORS
+// and inject auth. Forwards /rest/api/* → Jira Cloud.
+app.use('/rest', (req, res) => {
+  const https    = require('https');
+  const cloudId  = process.env.JIRA_CLOUD_ID;
+  const auth     = 'Basic ' + Buffer.from(
+    process.env.JIRA_EMAIL + ':' + process.env.JIRA_TOKEN
+  ).toString('base64');
+  const target   = `https://api.atlassian.com/ex/jira/${cloudId}${req.originalUrl}`;
+  const opts     = require('url').parse(target);
+  opts.method    = req.method;
+  opts.headers   = { 'Authorization': auth, 'Accept': 'application/json', 'Content-Type': 'application/json' };
+  const proxy    = https.request(opts, r => {
+    res.status(r.statusCode);
+    r.pipe(res, { end: true });
+  });
+  proxy.on('error', e => res.status(502).json({ error: e.message }));
+  req.pipe(proxy, { end: true });
+});
+
 app.get('/mbr', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'mbr.html'));
 });

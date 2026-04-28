@@ -894,7 +894,7 @@ export default function MBRDashboard() {
   const [customEnd,     setCustomEnd]     = useState("");
   const [useCustom,     setUseCustom]     = useState(false);
   const [dateField,     setDateField]     = useState("created");
-  const [proxyUrl,      setProxyUrl]      = useState("http://localhost:3010");
+  const [proxyUrl,      setProxyUrl]      = useState(window.location.origin);
   const [customJql,     setCustomJql]     = useState("");
   const [useCustomJql,  setUseCustomJql]  = useState(false);
   const [fetchStatus,   setFetchStatus]   = useState("idle");
