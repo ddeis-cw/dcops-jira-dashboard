@@ -209,6 +209,60 @@ function triggerSync(type, fn) {
   };
 }
 
+
+// ── API: Trends ───────────────────────────────────────────────
+app.get('/api/trends', (req, res) => {
+  const { window: win = '30d' } = req.query;
+  const windowMap = {
+    '1d':   { days: 1,   bucket: '%Y-%m-%d %H:00' },
+    '7d':   { days: 7,   bucket: '%Y-%m-%d'        },
+    '30d':  { days: 30,  bucket: '%Y-%m-%d'        },
+    '60d':  { days: 60,  bucket: '%Y-%m-%d'        },
+    '90d':  { days: 90,  bucket: '%Y-%m-%W'        },
+    '180d': { days: 180, bucket: '%Y-%m-%W'        },
+    '365d': { days: 365, bucket: '%Y-%m'           },
+  };
+  const cfg   = windowMap[win] || windowMap['30d'];
+  const since = new Date(Date.now() - cfg.days * 86400000).toISOString();
+  try {
+    const rows = db.prepare(`
+      SELECT
+        SUBSTR(COALESCE(
+          CASE WHEN t.location IS NOT NULL AND t.location != '' THEN t.location END,
+          e.site
+        ), 1, 6) AS site,
+        t.project,
+        strftime(?, t.created_at) AS bucket,
+        COUNT(*) AS n
+      FROM tickets t
+      LEFT JOIN employees e ON t.assignee = e.name
+      WHERE t.created_at >= ?
+        AND (t.location IS NOT NULL AND t.location != '' OR e.site IS NOT NULL)
+      GROUP BY site, t.project, bucket
+      ORDER BY site, bucket
+    `).all(cfg.bucket, since);
+    const bucketSet = new Set(rows.map(r => r.bucket));
+    const labels = [...bucketSet].sort();
+    const map = {};
+    rows.forEach(r => {
+      if (!r.site) return;
+      if (!map[r.site]) map[r.site] = {};
+      if (!map[r.site][r.project]) map[r.site][r.project] = {};
+      map[r.site][r.project][r.bucket] = r.n;
+    });
+    const sites = {};
+    Object.entries(map).forEach(([site, projects]) => {
+      sites[site] = {};
+      Object.entries(projects).forEach(([proj, buckets]) => {
+        sites[site][proj] = labels.map(l => buckets[l] || 0);
+      });
+    });
+    res.json({ sites, labels, window: win });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/sync/tickets',   triggerSync('tickets',   syncTickets));
 app.post('/api/sync/employees', triggerSync('employees', syncEmployees));
 app.post('/api/sync/servers',   triggerSync('servers',   syncServers));
@@ -299,3 +353,5 @@ app.listen(PORT, '0.0.0.0', async () => {
 
   console.log('[server] Ready — scheduler will start in 5 minutes\n');
 });
+
+// ── API: Trends ───────────────────────────────────────────────────────────────
