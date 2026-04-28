@@ -177,6 +177,10 @@ app.get('/api/sync/history', (req, res) => {
 });
 
 // ── Catch-all: serve React app ────────────────────────────────────────────────
+app.get('/mbr', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'mbr.html'));
+});
+
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });

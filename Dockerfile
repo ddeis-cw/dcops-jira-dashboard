@@ -19,8 +19,9 @@ RUN apk add --no-cache dumb-init
 # Copy dependencies and source
 # Copy only production node_modules
 COPY --from=deps /app/node_modules ./node_modules
-# Copy built frontend bundle
-COPY --from=deps /app/public/bundle.js ./public/bundle.js
+# Copy built frontend bundles
+COPY --from=deps /app/public/bundle.js     ./public/bundle.js
+COPY --from=deps /app/public/mbr-bundle.js ./public/mbr-bundle.js
 COPY package*.json ./
 COPY src/           ./src/
 COPY migrations/    ./migrations/
