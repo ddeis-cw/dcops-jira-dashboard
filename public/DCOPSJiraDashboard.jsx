@@ -2448,27 +2448,18 @@ Jira version: ${d.version || "unknown"}`);
       {/* ── TRENDS TAB ── */}
       {activeTab === "trends" && (() => {
         const PROJS = [
-          {k:"do",  label:"DCT-Ops",   short:"DCT", c:"#E8B86D"},
-          {k:"sda", label:"Albatross", short:"ALB", c:"#7EB6FF"},
-          {k:"sde", label:"Eagle",     short:"EGL", c:"#5CDE97"},
-          {k:"sdh", label:"Heron",     short:"HRN", c:"#4ECDC4"},
-          {k:"sdo", label:"Osprey",    short:"OSP", c:"#FFB347"},
-          {k:"sdp", label:"Phoenix",   short:"PHX", c:"#FF6B6B"},
-          {k:"sds", label:"SnipeCust", short:"SNP", c:"#C778DD"},
+          {k:"do",  label:"DO",  c:"#3b82f6", dash:[]},
+          {k:"sda", label:"SDA", c:"#22c55e", dash:[6,3]},
+          {k:"sdp", label:"SDP", c:"#eab308", dash:[3,3]},
+          {k:"sdo", label:"OSP", c:"#f97316", dash:[8,3,2,3]},
+          {k:"sde", label:"EGL", c:"#10b981", dash:[4,4]},
+          {k:"sdh", label:"HRN", c:"#06b6d4", dash:[2,2]},
+          {k:"sds", label:"SNP", c:"#a855f7", dash:[6,2]},
         ];
-        const WINS = ["1d","7d","30d","60d","90d","180d","365d"];
-        const REGS = ["All","R1","R2","R3","R4","EMEA"];
-        const SITE_REGION = {
-          "US-DTN":"R1","US-LZL":"R1","US-CSZ":"R1","US-EVI":"R1","US-SPK":"R4","US-DNN":"R4",
-          "US-ARQ":"R3","US-LAS":"R3","US-PLZ":"R2","US-HIO":"R2","US-CVY":"R2","US-CDZ":"R2",
-          "CA-GAL":"R4","US-OBG":"R2","US-BVI":"R2","US-EWS":"R1","US-CMH":"R2","US-PHX":"R3",
-          "US-AUS":"R3","US-RIN":"R2","US-LBB":"R3","US-WJQ":"R1","US-SVG":"R2","US-MKO":"R3",
-          "US-HMN":"R2","US-NNN":"R1","US-QNC":"R2","US-RRX":"R2","US-LOE":"R2","US-AAI":"R1",
-          "US-LNB":"R1","US-CVG":"R2","US-MSC":"R2","US-LHS":"R2","US-PPY":"R3","US-SKY":"R1",
-          "US-NKQ":"R1","US-LYF":"R2","US-WCI":"R2","US-DGV":"R2","US-CLY":"R1","US-VO2":"R2",
-          "ES-BCN":"EMEA","ES-AVQ":"EMEA","GB-PPL":"EMEA","GB-CWY":"EMEA",
-          "NO-OVO":"EMEA","NO-POR":"EMEA","SE-FAN":"EMEA","SE-SKH":"EMEA","DK-SVL":"EMEA",
-        };
+        const WINS = [
+          {k:"1d",lb:"1d"},{k:"7d",lb:"7d"},{k:"30d",lb:"30d"},
+          {k:"60d",lb:"60d"},{k:"90d",lb:"90d"},{k:"180d",lb:"180d"},{k:"365d",lb:"365d"},
+        ];
 
         const loadWin = (w) => {
           setTrendsWin(w); setTrendsLoading(true); setTrendsData(null);
@@ -2477,116 +2468,193 @@ Jira version: ${d.version || "unknown"}`);
             .catch(()=>setTrendsLoading(false));
         };
 
-        const makeSVG = (sd, labels) => {
-          const W=200, H=56, pts=labels.length||1;
-          const allV = PROJS.flatMap(p=>(sd[p.k]||[]));
-          const mx = Math.max(...allV, 1)*1.12;
-          const grids = [.25,.5,.75].map(f=>`<line x1="0" y1="${(H*(1-f)).toFixed(1)}" x2="${W}" y2="${(H*(1-f)).toFixed(1)}" stroke="rgba(255,255,255,.06)" stroke-width=".5"/>`).join("");
-          const lines = PROJS.map(p=>{
-            const arr=sd[p.k]||[]; const pts2=arr.length||1;
-            const ps=arr.map((v,i)=>`${((i/(pts2-1||1))*W).toFixed(1)},${(H-(v/mx)*H).toFixed(1)}`).join(" ");
-            return `<polygon points="${ps} ${W},${H} 0,${H}" fill="${p.c}" opacity=".05"/>`+
-                   `<polyline points="${ps}" fill="none" stroke="${p.c}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" opacity=".9"/>`;
-          }).join("");
-          const dots=PROJS.map(p=>{const arr=sd[p.k]||[];const v=arr[arr.length-1]||0;return `<circle cx="${W}" cy="${(H-(v/mx)*H).toFixed(1)}" r="2" fill="${p.c}"/>`;}).join("");
-          return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="display:block">${grids}${lines}${dots}</svg>`;
+        // Derive selected site from trendsData or first available
+        const siteKeys = trendsData ? Object.keys(trendsData.sites).sort() : [];
+        const [trendsSite, setTrendsSite] = useState("");
+        const activeSite = trendsSite && siteKeys.includes(trendsSite) ? trendsSite : siteKeys[0] || "";
+        const sd    = trendsData && activeSite ? (trendsData.sites[activeSite] || {}) : {};
+        const labels = trendsData ? trendsData.labels : [];
+        const pts    = labels.length;
+
+        // Chart helpers
+        const W=560, H=220, padL=44, padB=28, padT=10, padR=16;
+        const cW = W - padL - padR;
+        const cH = H - padB - padT;
+
+        const allVals = PROJS.flatMap(p=>(sd[p.k]||[]));
+        const maxV = Math.max(...allVals, 1);
+        const yTicks = [0,.25,.5,.75,1].map(f=>Math.round(maxV*f));
+
+        const xPx  = i => padL + (pts>1 ? (i/(pts-1))*cW : cW/2);
+        const yPx  = v => padT + cH - (v/maxV)*cH;
+
+        const polyline = (arr, dash) => {
+          if(!arr||arr.length===0) return null;
+          const pts2 = arr.map((v,i)=>`${xPx(i).toFixed(1)},${yPx(v).toFixed(1)}`).join(" ");
+          return pts2;
         };
 
-        const trend = (sd, pts) => {
-          const half=Math.max(1,Math.floor(pts/2));
-          let a=0,b=0;
-          PROJS.forEach(p=>{const arr=sd[p.k]||[];a+=arr.slice(0,half).reduce((s,v)=>s+v,0);b+=arr.slice(-half).reduce((s,v)=>s+v,0);});
-          return a>0?((b-a)/a*100):0;
+        // MoM: compare last period vs prev period
+        const lastIdx = pts-1;
+        const prevIdx = Math.max(0, pts-2);
+        const momCard = (proj) => {
+          const arr = sd[proj.k] || [];
+          const cur  = arr[lastIdx] || 0;
+          const prev = arr[prevIdx] || 0;
+          const pct  = prev>0 ? ((cur-prev)/prev*100) : 0;
+          const avg  = arr.length ? Math.round(arr.reduce((a,v)=>a+v,0)/arr.length) : 0;
+          const peak = Math.max(...arr,0);
+          const peakIdx = arr.indexOf(peak);
+          const peakLbl = labels[peakIdx] ? labels[peakIdx].slice(0,7) : "—";
+          return {cur,prev,pct,avg,peak,peakLbl};
         };
+        const totalCur = PROJS.reduce((s,p)=>{const a=sd[p.k]||[];return s+(a[lastIdx]||0);},0);
 
-        if(trendsLoading) return <div style={{color:"#64748b",textAlign:"center",padding:"60px 0",fontSize:13}}>Loading trend data…</div>;
-        if(!trendsData)   return <div style={{color:"#64748b",textAlign:"center",padding:"60px 0",fontSize:13}}>Select a window to load trends.</div>;
+        // Type breakdown for last period
+        const lastPeriodLabel = labels[lastIdx] ? labels[lastIdx].slice(0,7) : "";
 
-        const {sites,labels} = trendsData;
-        const pts = labels.length;
-
-        let siteList = Object.entries(sites)
-          .filter(([s])=>trendsRegion==="All"||SITE_REGION[s]===trendsRegion)
-          .map(([site,sd])=>{
-            const total=PROJS.reduce((sum,p)=>(sd[p.k]||[]).reduce((a,v)=>a+v,sum),0);
-            const tr=trend(sd,pts);
-            const last=PROJS.reduce((sum,p)=>{const a=sd[p.k]||[];return sum+(a[a.length-1]||0);},0);
-            const top=PROJS.map(p=>({p,t:(sd[p.k]||[]).reduce((a,v)=>a+v,0)})).sort((a,b)=>b.t-a.t)[0];
-            return {site,sd,total,tr,last,top};
-          });
-
-        if(trendsSort==="vol") siteList.sort((a,b)=>b.total-a.total);
-        else if(trendsSort==="mom") siteList.sort((a,b)=>b.tr-a.tr);
-        else siteList.sort((a,b)=>a.site.localeCompare(b.site));
+        if(trendsLoading) return <div style={{color:"#64748b",textAlign:"center",padding:"60px 0",fontSize:13}}>Loading…</div>;
 
         return (
-          <div>
-            <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:14,flexWrap:"wrap"}}>
-              <div style={{display:"flex",gap:2,background:"#1e293b",border:"1px solid #334155",borderRadius:8,padding:3}}>
-                {WINS.map(w=>(
-                  <button key={w} onClick={()=>loadWin(w)} style={{padding:"3px 10px",fontSize:11,fontWeight:600,borderRadius:6,border:"none",cursor:"pointer",
-                    background:trendsWin===w?"#1a4a8a":"transparent",color:trendsWin===w?"#7eb6ff":"#94a3b8"}}>{w}</button>
-                ))}
+          <div style={{color:"#f1f5f9"}}>
+            {/* Controls */}
+            <div style={{display:"flex",gap:12,alignItems:"center",marginBottom:16,flexWrap:"wrap"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:12,color:"#94a3b8"}}>Site</span>
+                <select value={activeSite} onChange={e=>setTrendsSite(e.target.value)} style={{
+                  fontSize:12,padding:"5px 10px",borderRadius:6,border:"1px solid #334155",
+                  background:"#1e293b",color:"#f1f5f9",cursor:"pointer",minWidth:110,
+                }}>
+                  {siteKeys.length===0
+                    ? <option>— load data —</option>
+                    : siteKeys.map(s=><option key={s} value={s}>{s}</option>)
+                  }
+                </select>
               </div>
-              <div style={{width:1,height:18,background:"#334155"}}/>
-              <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
-                {REGS.map(r=>(
-                  <button key={r} onClick={()=>setTrendsRegion(r)} style={{padding:"3px 10px",fontSize:11,fontWeight:600,borderRadius:6,
-                    border:"1px solid #334155",cursor:"pointer",
-                    background:trendsRegion===r?"#1e293b":"transparent",color:trendsRegion===r?"#f1f5f9":"#64748b"}}>{r}</button>
-                ))}
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:12,color:"#94a3b8"}}>Window</span>
+                <select value={trendsWin} onChange={e=>loadWin(e.target.value)} style={{
+                  fontSize:12,padding:"5px 10px",borderRadius:6,border:"1px solid #334155",
+                  background:"#1e293b",color:"#f1f5f9",cursor:"pointer",
+                }}>
+                  {[["1d","Last 24 hours"],["7d","Last 7 days"],["30d","Last 30 days"],
+                    ["60d","Last 60 days"],["90d","Last 90 days"],["180d","Last 180 days"],["365d","Last 12 months"]
+                  ].map(([k,lb])=><option key={k} value={k}>{lb}</option>)}
+                </select>
               </div>
-              <div style={{flex:1}}/>
-              <select value={trendsSort} onChange={e=>setTrendsSort(e.target.value)} style={{fontSize:11,padding:"4px 8px",borderRadius:6,border:"1px solid #334155",background:"#0f172a",color:"#94a3b8"}}>
-                <option value="vol">Sort: volume ↓</option>
-                <option value="mom">Sort: trend ↓</option>
-                <option value="az">Sort: A–Z</option>
-              </select>
+              {!trendsData && (
+                <button onClick={()=>loadWin(trendsWin)} style={{
+                  padding:"5px 14px",fontSize:12,fontWeight:600,borderRadius:6,
+                  border:"1px solid #6366f1",background:"#6366f1",color:"#fff",cursor:"pointer",
+                }}>Load Data</button>
+              )}
             </div>
 
-            <div style={{display:"flex",flexWrap:"wrap",gap:12,marginBottom:12,padding:"6px 12px",background:"#1e293b",border:"1px solid #334155",borderRadius:8}}>
-              {PROJS.map(p=>(
-                <span key={p.k} style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"#94a3b8"}}>
-                  <span style={{width:18,height:2,background:p.c,display:"inline-block",borderRadius:1}}/>{p.short} <span style={{color:"#475569"}}>{p.label}</span>
-                </span>
-              ))}
-            </div>
+            {!trendsData ? (
+              <div style={{color:"#64748b",textAlign:"center",padding:"60px 0",fontSize:13}}>
+                Click <b style={{color:"#f1f5f9"}}>Load Data</b> to fetch trends.
+              </div>
+            ) : (
+              <>
+                {/* Legend */}
+                <div style={{display:"flex",gap:16,marginBottom:10,flexWrap:"wrap"}}>
+                  {PROJS.map(p=>(
+                    <span key={p.k} style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:"#94a3b8"}}>
+                      <svg width="24" height="10"><line x1="0" y1="5" x2="24" y2="5"
+                        stroke={p.c} strokeWidth="2"
+                        strokeDasharray={p.dash.length?p.dash.join(","):"none"}/></svg>
+                      {p.label}
+                    </span>
+                  ))}
+                </div>
 
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(215px,1fr))",gap:10}}>
-              {siteList.map(({site,sd,total,tr,last,top})=>{
-                const tc=tr>8?"#5CDE97":tr<-8?"#FF6B6B":tr>3?"#c8e89a":tr<-3?"#ffb3b3":"#64748b";
-                const tpPct=total>0?Math.round(top.t/total*100):0;
-                const bars=PROJS.map(p=>{const v=(sd[p.k]||[])[pts-1]||0;const pct=last>0?(v/last*100):0;return `<div style="height:3px;background:${p.c};width:${pct.toFixed(1)}%;min-width:${pct>0?"2px":"0"};border-radius:1px"></div>`;}).join("");
-                const chips=PROJS.slice(0,4).map(p=>{const v=(sd[p.k]||[])[pts-1]||0;return `<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${p.c}1a;color:${p.c};font-weight:600">${p.short} ${v}</span>`;}).join("");
-                return (
-                  <div key={site} style={{border:"1px solid rgba(128,128,128,.2)",borderRadius:10,overflow:"hidden",background:"#0f172a",cursor:"pointer",transition:"border-color .15s"}}
-                    onMouseEnter={e=>e.currentTarget.style.borderColor="#378ADD"}
-                    onMouseLeave={e=>e.currentTarget.style.borderColor="rgba(128,128,128,.2)"}>
-                    <div style={{background:"#0d1117",padding:"8px 10px 0"}}>
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:5}}>
-                        <span style={{fontSize:13,fontWeight:600,color:"#e2e8f0"}}>{site}</span>
-                        <span style={{fontSize:10,color:"#475569"}}>{total.toLocaleString()} / {trendsWin}</span>
-                      </div>
-                      <div dangerouslySetInnerHTML={{__html:makeSVG(sd,labels)}}/>
-                      <div style={{display:"flex",gap:2,marginTop:4,height:3,marginBottom:6}} dangerouslySetInnerHTML={{__html:bars}}/>
-                    </div>
-                    <div style={{padding:"8px 10px 9px",borderTop:"1px solid rgba(128,128,128,.12)"}}>
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
-                        <span style={{fontSize:10,color:"#64748b"}}>Period trend</span>
-                        <span style={{fontSize:12,fontWeight:600,color:tc}}>{(tr>=0?"+":"")+tr.toFixed(1)}%</span>
-                      </div>
-                      <div style={{fontSize:9,color:"#475569",marginBottom:5}}>
-                        Top: <span style={{color:top.p.c,fontWeight:600}}>{top.p.short}</span> · {tpPct}% · last: <b style={{color:"#94a3b8"}}>{last}</b>
-                      </div>
-                      <div style={{display:"flex",flexWrap:"wrap",gap:3}} dangerouslySetInnerHTML={{__html:chips}}/>
-                    </div>
+                {/* Chart */}
+                <div style={{background:"#0d1117",borderRadius:10,padding:"16px 12px",marginBottom:20}}>
+                  <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{display:"block",maxHeight:240}}>
+                    {/* grid lines */}
+                    {yTicks.map((v,i)=>(
+                      <g key={i}>
+                        <line x1={padL} y1={yPx(v).toFixed(1)} x2={W-padR} y2={yPx(v).toFixed(1)}
+                          stroke="rgba(255,255,255,.07)" strokeWidth=".5"/>
+                        <text x={padL-4} y={yPx(v)+4} textAnchor="end" fill="#475569" fontSize="9">{v>=1000?(v/1000).toFixed(0)+"k":v}</text>
+                      </g>
+                    ))}
+                    {/* x labels — show ~8 evenly */}
+                    {labels.map((l,i)=>{
+                      const step = Math.max(1,Math.floor(pts/8));
+                      if(i%step!==0 && i!==pts-1) return null;
+                      return <text key={i} x={xPx(i).toFixed(1)} y={H-8} textAnchor="middle" fill="#475569" fontSize="9">{l.slice(0,7)}</text>;
+                    })}
+                    {/* lines + dots */}
+                    {PROJS.map(p=>{
+                      const arr=sd[p.k]||[];
+                      if(!arr.length) return null;
+                      const pts2=arr.map((v,i)=>`${xPx(i).toFixed(1)},${yPx(v).toFixed(1)}`).join(" ");
+                      return (
+                        <g key={p.k}>
+                          <polyline points={pts2} fill="none" stroke={p.c} strokeWidth="1.8"
+                            strokeDasharray={p.dash.length?p.dash.join(","):undefined}
+                            strokeLinejoin="round" strokeLinecap="round" opacity=".9"/>
+                          {arr.map((v,i)=>(
+                            <circle key={i} cx={xPx(i).toFixed(1)} cy={yPx(v).toFixed(1)} r="2.5" fill={p.c} opacity=".85"/>
+                          ))}
+                        </g>
+                      );
+                    })}
+                  </svg>
+                </div>
+
+                {/* MoM stats */}
+                <div style={{fontSize:11,fontWeight:700,color:"#64748b",textTransform:"uppercase",letterSpacing:".06em",marginBottom:10}}>
+                  Month-over-month — {activeSite} · comparing {labels[prevIdx]?.slice(0,7)||"—"} → {labels[lastIdx]?.slice(0,7)||"—"}
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:8,marginBottom:20}}>
+                  <div style={{background:"#1e293b",borderRadius:8,padding:"12px 14px"}}>
+                    <div style={{fontSize:10,color:"#64748b",marginBottom:4}}>Total tickets ({lastPeriodLabel})</div>
+                    <div style={{fontSize:24,fontWeight:700,color:"#f1f5f9"}}>{totalCur.toLocaleString()}</div>
                   </div>
-                );
-              })}
-            </div>
+                  {PROJS.map(p=>{
+                    const {cur,pct,avg,peak,peakLbl}=momCard(p);
+                    const up=pct>0; const col=up?"#22c55e":"#ef4444";
+                    return (
+                      <div key={p.k} style={{background:"#1e293b",borderRadius:8,padding:"12px 14px"}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                          <span style={{fontSize:10,color:"#64748b"}}>{p.label}</span>
+                          <span style={{fontSize:11,fontWeight:700,color:col}}>{up?"▲":"▼"} {Math.abs(pct).toFixed(1)}%</span>
+                        </div>
+                        <div style={{fontSize:22,fontWeight:700,color:"#f1f5f9",marginBottom:4}}>{cur.toLocaleString()}</div>
+                        <div style={{fontSize:9,color:"#475569"}}>avg {avg} / period · peak {peak.toLocaleString()} ({peakLbl})</div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Type breakdown */}
+                <div style={{fontSize:11,fontWeight:700,color:"#64748b",textTransform:"uppercase",letterSpacing:".06em",marginBottom:10}}>
+                  Type breakdown — {lastPeriodLabel}
+                </div>
+                <div style={{background:"#1e293b",borderRadius:8,padding:"12px 16px"}}>
+                  {PROJS.map(p=>{
+                    const arr=sd[p.k]||[]; const v=arr[lastIdx]||0;
+                    const pct=totalCur>0?(v/totalCur*100):0;
+                    return (
+                      <div key={p.k} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+                        <span style={{width:30,fontSize:11,color:"#94a3b8",flexShrink:0}}>{p.label}</span>
+                        <div style={{flex:1,height:8,background:"#0f172a",borderRadius:4,overflow:"hidden"}}>
+                          <div style={{height:"100%",width:`${pct.toFixed(1)}%`,background:p.c,borderRadius:4}}/>
+                        </div>
+                        <span style={{width:36,fontSize:11,textAlign:"right",color:"#64748b"}}>{Math.round(pct)}%</span>
+                        <span style={{width:52,fontSize:11,textAlign:"right",color:"#94a3b8"}}>{v.toLocaleString()}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </div>
         );
       })()}
+
 
     </div>
   );
