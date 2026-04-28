@@ -56,8 +56,9 @@ app.get('/api/status', (req, res) => {
 // Paginated — use ?page=0&limit=1000 to walk through all tickets.
 // The dashboard fetches all pages sequentially on load.
 app.get('/api/tickets', (req, res) => {
-  const { project, page = 0, limit = 2000 } = req.query;
+  const { project, page = 0, limit = 2000, date_from, date_to, date_field = 'created_at' } = req.query;
   const offset = parseInt(page) * parseInt(limit);
+  const col    = ['created_at','resolved_at','updated_at'].includes(date_field) ? date_field : 'created_at';
 
   let countSql = 'SELECT COUNT(*) as n FROM tickets WHERE 1=1';
   let dataSql  = 'SELECT key, project, summary, assignee, status, issue_type, priority, location, maintenance_type, sla_seconds, created_at, updated_at, resolved_at FROM tickets WHERE 1=1';
@@ -67,6 +68,16 @@ app.get('/api/tickets', (req, res) => {
     countSql += ' AND project = ?';
     dataSql  += ' AND project = ?';
     args.push(project);
+  }
+  if (date_from) {
+    countSql += ` AND ${col} >= ?`;
+    dataSql  += ` AND ${col} >= ?`;
+    args.push(date_from);
+  }
+  if (date_to) {
+    countSql += ` AND ${col} <= ?`;
+    dataSql  += ` AND ${col} <= ?`;
+    args.push(date_to + 'T23:59:59');
   }
 
   dataSql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';

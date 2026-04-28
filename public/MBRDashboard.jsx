@@ -909,109 +909,74 @@ export default function MBRDashboard() {
 
   const fetchData = useCallback(async () => {
     if (!period.start || !period.end) return;
-    const base = proxyUrl.replace(/\/$/, "");
-    const defaultJql = `project IN (service-desk-albatross, service-desk-eagle, service-desk-heron, service-desk-osprey, service-desk-phoenix, service-desk-snipecustomer, dct-ops) AND project != GSOC AND ${dateField} >= "${period.start}" AND ${dateField} <= "${period.end}" ORDER BY created DESC`;
-    const jql = (useCustomJql && customJql.trim()) ? customJql.trim() : defaultJql;
-    // Fetch SLA field (customfield_10020 = Time to resolution in JSM)
-    const FIELDS = "summary,assignee,status,priority,issuetype,created,resolutiondate,customfield_11810,customfield_10194,customfield_10020,customfield_10016,customfield_11717,customfield_11714";
-    const encoded = encodeURIComponent(jql);
-    const PAGE = 100, CONC = 10;
+    const PAGE = 5000;
 
     setFetchStatus("fetching"); setErrorMsg(""); setTickets([]); setProgress({ done:0, total:null });
 
     try {
-      const probe = await fetch(`${base}/rest/api/3/search/jql?jql=${encoded}&maxResults=1&fields=summary&returnTotalCount=true`, { headers:{ Accept:"application/json" }});
-      if (!probe.ok) throw new Error(`HTTP ${probe.status} — is the proxy running?`);
-      const pd = await probe.json();
-      const total = pd.total ?? pd.totalCount ?? null;
-      const raw = [];
+      // Load live DCT list from employees API
+      const empRes = await fetch("/api/employees");
+      const empData = empRes.ok ? await empRes.json() : {};
+      const liveDct = new Set(empData.dctList || []);
+      const allDct = new Set([...DCT_LIST, ...liveDct]);
 
-      if (total && total > 0) {
-        const offsets = [];
-        for (let s = 0; s < total; s += PAGE) offsets.push(s);
-        setProgress({ done:0, total });
-        for (let i = 0; i < offsets.length; i += CONC) {
-          const batch = offsets.slice(i, i+CONC).map(off =>
-            fetch(`${base}/rest/api/3/search/jql?jql=${encoded}&maxResults=${PAGE}&startAt=${off}&fields=${FIELDS}`, { headers:{ Accept:"application/json" }})
-              .then(r => r.ok ? r.json() : null).catch(()=>null)
-          );
-          const results = await Promise.all(batch);
-          results.forEach(d => { if (d) raw.push(...(d.issues||d.values||[])); });
-          setProgress({ done: Math.min((i+CONC)*PAGE, total), total });
-        }
-      } else {
-        raw.push(...(pd.issues||pd.values||[]));
-        let nextToken = pd.nextPageToken;
-        while (nextToken) {
-          const r = await fetch(`${base}/rest/api/3/search/jql?jql=${encoded}&maxResults=${PAGE}&fields=${FIELDS}&nextPageToken=${encodeURIComponent(nextToken)}`, { headers:{ Accept:"application/json" }});
-          if (!r.ok) break;
-          const d = await r.json();
-          raw.push(...(d.issues||d.values||[]));
-          nextToken = d.isLast ? null : d.nextPageToken;
-          setProgress({ done: raw.length, total:null });
-        }
+      const colMap = { created: "created_at", resolutiondate: "resolved_at" };
+      const dbField = colMap[dateField] || "created_at";
+
+      const probeParams = new URLSearchParams({
+        date_from: period.start, date_to: period.end,
+        date_field: dbField, limit: 1, page: 0,
+      });
+      const probe = await fetch(`/api/tickets?${probeParams}`);
+      if (!probe.ok) throw new Error(`HTTP ${probe.status}`);
+      const pd = await probe.json();
+      const total = pd.total || 0;
+      setProgress({ done: 0, total });
+
+      const raw = [];
+      const pages = Math.ceil(total / PAGE);
+      for (let p = 0; p < pages; p++) {
+        const params = new URLSearchParams({
+          date_from: period.start, date_to: period.end,
+          date_field: dbField, limit: PAGE, page: p,
+        });
+        const r = await fetch(`/api/tickets?${params}`);
+        if (!r.ok) break;
+        const d = await r.json();
+        raw.push(...(d.tickets || []));
+        setProgress({ done: raw.length, total });
       }
 
-      const parsed = raw.map(issue => {
-        const f = issue.fields||{};
-        const strF = v => Array.isArray(v)?(v[0]||"").toString().trim():(v||"").toString().trim();
-        const slaHours = parseSlaHours(f.customfield_10020);
-        // Fallback MTTR: created → resolved, capped at 30 days
+      const parsed = raw.map(t => {
+        const slaHours = t.sla_seconds ? t.sla_seconds / 3600 : null;
         let fallbackHours = null;
-        if (f.resolutiondate && f.created) {
-          const h = (new Date(f.resolutiondate) - new Date(f.created)) / 3600000;
+        if (t.resolved_at && t.created_at) {
+          const h = (new Date(t.resolved_at) - new Date(t.created_at)) / 3600000;
           if (h >= 0 && h <= 720) fallbackHours = h;
         }
-        // Derive project from issue key prefix — guaranteed to exist and unique per project.
-        // e.g. "DO-1234" → "do", "SDA-56" → "sda" etc.
-        // Also use f.project name/key as supplementary signal.
-        const _iPrefix = (issue.key || "").split("-")[0].toUpperCase();
-        const _pName   = (f.project?.name || "").toLowerCase();
-        const _pKey    = (f.project?.key  || "").toUpperCase();
-        // Build combined signal — everything we know about this project
-        const _signal  = [_iPrefix, _pKey, _pName].join(" ").toLowerCase();
-        const resolvedProject = (() => {
-          // Exact prefix matches confirmed from live data
-          if (_iPrefix === "SDA") return "service-desk-albatross";
-          if (_iPrefix === "SDE") return "service-desk-eagle";
-          if (_iPrefix === "SDH") return "service-desk-heron";
-          if (_iPrefix === "SDO") return "service-desk-osprey";
-          if (_iPrefix === "SDP") return "service-desk-phoenix";
-          if (_iPrefix === "SDS") return "service-desk-snipecustomer";
-          if (_iPrefix === "DO")  return "dct-ops";
-          // Name-based fallback
-          if (_signal.includes("albatross"))                              return "service-desk-albatross";
-          if (_signal.includes("eagle"))                                  return "service-desk-eagle";
-          if (_signal.includes("osprey"))                                 return "service-desk-osprey";
-          if (_signal.includes("phoenix"))                                return "service-desk-phoenix";
-          if (_signal.includes("snipe") || _signal.includes("customer")) return "service-desk-snipecustomer";
-          if (_signal.includes("dct"))                                    return "dct-ops";
-          return "unknown";
-        })();
         return {
-          key:         issue.key||"",
-          summary:     f.summary||"",
-          assignee:    f.assignee?.displayName||"Unassigned",
-          isDct:       DCT_LIST.has(f.assignee?.displayName||""),
-          project:     resolvedProject,
-          projectName: f.project?.name||"",
-          projectKey:  _pKey,
-          status:      f.status?.name||"",
-          group:       getStatusGroup(f.status?.name||""),
-          priority:    f.priority?.name||"Medium",
-          issueType:   f.issuetype?.name||"",
-          created:     (f.created||"").slice(0,10),
-          resolved:    f.resolutiondate||null,
-          location:      resolveLocation(f.customfield_11810, f.customfield_10194),
-          mttrHours:     slaHours ?? fallbackHours,
-          hasSla:        slaHours != null,
-          maintType:     (() => { const v = f.customfield_10016; return Array.isArray(v) ? (v[0]||null) : (v||null); })(),
-          hasServerAsset: !!(f.customfield_11717?.length || (Array.isArray(f.customfield_11717) && f.customfield_11717.length)),
-          hasNetworkAsset:!!(f.customfield_11714?.length || (Array.isArray(f.customfield_11714) && f.customfield_11714.length)),
+          key:             t.key || "",
+          summary:         t.summary || "",
+          assignee:        t.assignee || "Unassigned",
+          isDct:           allDct.has(t.assignee || ""),
+          project:         t.project || "unknown",
+          projectName:     t.project || "",
+          projectKey:      (t.key || "").split("-")[0].toUpperCase(),
+          status:          t.status || "",
+          group:           getStatusGroup(t.status || ""),
+          priority:        t.priority || "Medium",
+          issueType:       t.issue_type || "",
+          created:         (t.created_at || "").slice(0, 10),
+          resolved:        t.resolved_at || null,
+          location:        t.location || "Other",
+          mttrHours:       slaHours ?? fallbackHours,
+          hasSla:          slaHours != null,
+          maintType:       t.maintenance_type || null,
+          hasServerAsset:  false,
+          hasNetworkAsset: false,
         };
       }).filter(t => t.key);
 
-      // Debug: log unique project values to verify matching
       const projCounts = {};
       parsed.forEach(t => { projCounts[t.project] = (projCounts[t.project]||0)+1; });
       console.log("[MBR] Project breakdown:", projCounts);
@@ -1023,7 +988,7 @@ export default function MBRDashboard() {
       setErrorMsg(e.message);
       setFetchStatus("error");
     }
-  }, [period, dateField, proxyUrl, customJql, useCustomJql]);
+  }, [period, dateField]);
 
   // ── Derived metrics ─────────────────────────────────────────
   const metrics = useMemo(() => {
