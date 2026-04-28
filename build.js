@@ -1,16 +1,13 @@
 /**
  * build.js — esbuild config for DCOPS Jira Dashboard
  *
- * Maps npm package imports to CDN globals loaded in index.html:
- *   react       → window.React
- *   react-dom   → window.ReactDOM
- *   recharts    → window.Recharts
- *
- * This avoids bundling React/Recharts (saves ~3MB) while still
- * compiling the JSX correctly.
+ * Builds two bundles:
+ *   public/bundle.js     — DCOPSJiraDashboard (main app)
+ *   public/mbr-bundle.js — MBRDashboard
  */
 
 const esbuild = require('esbuild');
+const fs      = require('fs');
 
 const CDN_GLOBALS = {
   'react':              'React',
@@ -19,35 +16,38 @@ const CDN_GLOBALS = {
   'recharts':           'Recharts',
 };
 
-esbuild.build({
-  entryPoints: ['public/DCOPSJiraDashboard.jsx'],
-  bundle:      true,
-  outfile:     'public/bundle.js',
-  format:      'iife',
-  globalName:  'DCOPSApp',
-  define:      { 'process.env.NODE_ENV': '"production"' },
-  logLevel:    'info',
-  plugins: [{
-    name: 'cdn-globals',
-    setup(build) {
-      // Intercept all imports that map to CDN globals
-      build.onResolve({ filter: /^(react|react-dom|recharts)(\/.*)?$/ }, args => ({
-        path:      args.path,
-        namespace: 'cdn-globals',
-      }));
-      // Return a stub that exposes the global
-      build.onLoad({ filter: /.*/, namespace: 'cdn-globals' }, ({ path }) => {
-        const global = CDN_GLOBALS[path];
-        if (!global) return { contents: 'module.exports = {}', loader: 'js' };
-        return {
-          contents: `module.exports = globalThis.${global} || {};`,
-          loader:   'js',
-        };
-      });
-    },
-  }],
-}).then(result => {
-  const fs   = require('fs');
-  const size = fs.statSync('public/bundle.js').size;
-  console.log(`✓ bundle.js  ${(size / 1024).toFixed(1)} KB`);
+const cdnPlugin = {
+  name: 'cdn-globals',
+  setup(build) {
+    build.onResolve({ filter: /^(react|react-dom|recharts)(\/.*)?$/ }, args => ({
+      path:      args.path,
+      namespace: 'cdn-globals',
+    }));
+    build.onLoad({ filter: /.*/, namespace: 'cdn-globals' }, ({ path }) => {
+      const global = CDN_GLOBALS[path];
+      if (!global) return { contents: 'module.exports = {}', loader: 'js' };
+      return {
+        contents: `module.exports = globalThis.${global} || {};`,
+        loader:   'js',
+      };
+    });
+  },
+};
+
+const shared = {
+  bundle:  true,
+  format:  'iife',
+  define:  { 'process.env.NODE_ENV': '"production"' },
+  logLevel:'info',
+  plugins: [cdnPlugin],
+};
+
+Promise.all([
+  esbuild.build({ ...shared, entryPoints: ['public/DCOPSJiraDashboard.jsx'], outfile: 'public/bundle.js',     globalName: 'DCOPSApp' }),
+  esbuild.build({ ...shared, entryPoints: ['public/MBRDashboard.jsx'],       outfile: 'public/mbr-bundle.js', globalName: 'MBRApp'   }),
+]).then(() => {
+  const main = fs.statSync('public/bundle.js').size;
+  const mbr  = fs.statSync('public/mbr-bundle.js').size;
+  console.log(`✓ bundle.js      ${(main/1024).toFixed(1)} KB`);
+  console.log(`✓ mbr-bundle.js  ${(mbr/1024).toFixed(1)} KB`);
 }).catch(() => process.exit(1));
