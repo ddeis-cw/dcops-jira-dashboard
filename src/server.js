@@ -159,11 +159,13 @@ app.get('/api/tickets/by-site-project', (req, res) => {
   try {
     const rows = db.prepare(`
       SELECT
-        COALESCE(
-          CASE WHEN t.location IS NOT NULL AND t.location != '' THEN
-            REPLACE(t.location, SUBSTR(t.location, LENGTH(t.location)-1), '')
-          END,
-          e.site
+        SUBSTR(
+          COALESCE(
+            CASE WHEN t.location IS NOT NULL AND t.location != '' THEN t.location END,
+            e.site
+          ),
+          1,
+          6
         ) AS site,
         t.project,
         COUNT(*) AS n
@@ -178,8 +180,7 @@ app.get('/api/tickets/by-site-project', (req, res) => {
     const map = {};
     rows.forEach(r => {
       if (!r.site) return;
-      // Strip trailing 2-digit suffix: US-DTN01 → US-DTN
-      const site = r.site.replace(/\d{2}$/, '');
+      const site = r.site;
       if (!map[site]) map[site] = {};
       map[site][r.project] = (map[site][r.project] || 0) + r.n;
     });
