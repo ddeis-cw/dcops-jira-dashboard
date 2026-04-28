@@ -1343,6 +1343,30 @@ export default function MBRDashboard() {
 
           {/* Row 1: DCT Closed Tickets by Site, colored by Project */}
           <div style={{ display:"grid", gridTemplateColumns:"1fr 300px", gap:16, marginBottom:16, alignItems:"start" }}>
+            <Section title="Ticket Volume · By Project" subtitle={`${period.label} · all tickets`}>
+              {metrics.projectData.filter(p=>p.total>0).map((p,i) => {
+                const maxTotal = Math.max(...metrics.projectData.map(x=>x.total));
+                const closePct = p.total ? Math.round(p.closed/p.total*100) : 0;
+                const pc = closePct>=90?C.green:closePct>=70?C.amber:C.red;
+                const colors = [C.blue,C.teal,C.purple,C.orange||'#f97316',C.red,C.green,C.slate];
+                const barColor = colors[i % colors.length];
+                return (
+                  <div key={p.key} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
+                    <div style={{ width:130, fontSize:11, fontWeight:600, color:C.text, textAlign:'right', flexShrink:0 }}>{p.label}</div>
+                    <div style={{ flex:1, background:C.light, borderRadius:3, height:18, position:'relative' }}>
+                      <div style={{ height:'100%', borderRadius:3, background:barColor, width:`${Math.round(p.total/maxTotal*100)}%`, opacity:.85 }}/>
+                      <div style={{ height:'100%', borderRadius:3, background:barColor, width:`${Math.round(p.closed/maxTotal*100)}%`, position:'absolute', top:0, left:0, opacity:1 }}/>
+                    </div>
+                    <div style={{ width:70, fontSize:11, color:C.text, flexShrink:0 }}>{p.total.toLocaleString()} total</div>
+                    <div style={{ width:60, fontSize:11, color:pc, fontWeight:700, flexShrink:0 }}>{closePct}% closed</div>
+                  </div>
+                );
+              })}
+              <div style={{ fontSize:10, color:C.slate, marginTop:8 }}>
+                Darker bar = closed tickets · lighter bar = total tickets
+              </div>
+            </Section>
+
             <Section title="Closed Tickets · By Site &amp; Project" subtitle={`${metrics.dctSiteData.length} sites · ${period.label} · all projects`}>
               <ResponsiveContainer width="100%" height={Math.max(300, metrics.dctSiteData.length * 26)}>
                 <BarChart data={metrics.dctSiteData} layout="vertical" margin={{ left:0, right:50, top:0, bottom:0 }}>
