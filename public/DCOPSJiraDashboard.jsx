@@ -2495,24 +2495,32 @@ Jira version: ${d.version || "unknown"}`);
           return pts2;
         };
 
-        // MoM: compare last period vs prev period
-        const lastIdx = pts-1;
-        const prevIdx = Math.max(0, pts-2);
-        const momCard = (proj) => {
-          const arr = sd[proj.k] || [];
-          const cur  = arr[lastIdx] || 0;
-          const prev = arr[prevIdx] || 0;
-          const pct  = prev>0 ? ((cur-prev)/prev*100) : 0;
-          const avg  = arr.length ? Math.round(arr.reduce((a,v)=>a+v,0)/arr.length) : 0;
-          const peak = Math.max(...arr,0);
-          const peakIdx = arr.indexOf(peak);
-          const peakLbl = labels[peakIdx] ? labels[peakIdx].slice(0,7) : "—";
-          return {cur,prev,pct,avg,peak,peakLbl};
-        };
-        const totalCur = PROJS.reduce((s,p)=>{const a=sd[p.k]||[];return s+(a[lastIdx]||0);},0);
+        // Split window in half for period-over-period comparison
+        const half     = Math.max(1, Math.floor(pts / 2));
+        const prevHalf = { start: 0,         end: half };
+        const curHalf  = { start: pts - half, end: pts  };
+        const sumHalf  = (arr, h) => arr.slice(h.start, h.end).reduce((a,v)=>a+v, 0);
 
-        // Type breakdown for last period
-        const lastPeriodLabel = labels[lastIdx] ? labels[lastIdx].slice(0,7) : "";
+        const momCard = (proj) => {
+          const arr  = sd[proj.k] || [];
+          const cur  = sumHalf(arr, curHalf);
+          const prev = sumHalf(arr, prevHalf);
+          const pct  = prev > 0 ? ((cur - prev) / prev * 100) : 0;
+          const avg  = arr.length ? Math.round(arr.reduce((a,v)=>a+v,0) / arr.length) : 0;
+          const peak = Math.max(...arr, 0);
+          const peakIdx = arr.indexOf(peak);
+          const peakLbl = labels[peakIdx] ? labels[peakIdx].slice(0,10) : "—";
+          return { cur, prev, pct, avg, peak, peakLbl };
+        };
+
+        // Totals across all projects for each half
+        const totalCur  = PROJS.reduce((s,p) => s + sumHalf(sd[p.k]||[], curHalf),  0);
+        const totalPrev = PROJS.reduce((s,p) => s + sumHalf(sd[p.k]||[], prevHalf), 0);
+        const totalPct  = totalPrev > 0 ? ((totalCur - totalPrev) / totalPrev * 100) : 0;
+
+        const prevLabel = labels[prevHalf.start] ? labels[prevHalf.start].slice(0,10) : "—";
+        const curLabel  = labels[curHalf.start]  ? labels[curHalf.start].slice(0,10)  : "—";
+        const lastPeriodLabel = curLabel;
 
         if(trendsLoading) return <div style={{color:"#64748b",textAlign:"center",padding:"60px 0",fontSize:13}}>Loading…</div>;
 
@@ -2609,12 +2617,13 @@ Jira version: ${d.version || "unknown"}`);
 
                 {/* MoM stats */}
                 <div style={{fontSize:11,fontWeight:700,color:"#64748b",textTransform:"uppercase",letterSpacing:".06em",marginBottom:10}}>
-                  Month-over-month — {activeSite} · comparing {labels[prevIdx]?.slice(0,7)||"—"} → {labels[lastIdx]?.slice(0,7)||"—"}
+                  Period-over-period — {activeSite} · {prevLabel} → {curLabel} (first half vs second half of window)
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:8,marginBottom:20}}>
                   <div style={{background:"#1e293b",borderRadius:8,padding:"12px 14px"}}>
-                    <div style={{fontSize:10,color:"#64748b",marginBottom:4}}>Total tickets ({lastPeriodLabel})</div>
+                    <div style={{fontSize:10,color:"#64748b",marginBottom:4}}>Total — current half</div>
                     <div style={{fontSize:24,fontWeight:700,color:"#f1f5f9"}}>{totalCur.toLocaleString()}</div>
+                    <div style={{fontSize:10,color:totalPct>=0?"#22c55e":"#ef4444",marginTop:4}}>{totalPct>=0?"▲":"▼"} {Math.abs(totalPct).toFixed(1)}% vs prev half ({totalPrev.toLocaleString()})</div>
                   </div>
                   {PROJS.map(p=>{
                     const {cur,pct,avg,peak,peakLbl}=momCard(p);
@@ -2638,7 +2647,7 @@ Jira version: ${d.version || "unknown"}`);
                 </div>
                 <div style={{background:"#1e293b",borderRadius:8,padding:"12px 16px"}}>
                   {PROJS.map(p=>{
-                    const arr=sd[p.k]||[]; const v=arr[lastIdx]||0;
+                    const arr=sd[p.k]||[]; const v=sumHalf(arr, curHalf);
                     const pct=totalCur>0?(v/totalCur*100):0;
                     return (
                       <div key={p.k} style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
