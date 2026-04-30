@@ -62,24 +62,50 @@ function jiraGet(path) {
   });
 }
 
+// ── Known site codes ─────────────────────────────────────────────────────────
+const KNOWN_SITES = new Set([
+  'US-DTN','US-LZL','US-CSZ','US-EVI','US-SPK','US-DNN','US-ARQ','US-LAS',
+  'US-PLZ','US-HIO','US-CVY','US-CDZ','CA-GAL','US-OBG','US-BVI','US-EWS',
+  'US-CMH','US-PHX','US-AUS','US-RIN','US-LBB','US-WJQ','US-SVG','US-MKO',
+  'US-HMN','US-NNN','US-QNC','US-RRX','US-LOE','US-AAI','US-LNB','US-CVG',
+  'US-MSC','US-LHS','US-PPY','US-SKY','US-NKQ','US-LYF','US-WCI','US-DGV',
+  'US-CLY','US-KWO','US-ABD','US-VO2',
+  'ES-BCN','ES-AVQ','GB-PPL','GB-CWY','NO-OVO','NO-POR','SE-FAN','SE-SKH','DK-SVL',
+]);
+
+// DC alias → site code (customfield_10194 values)
+const DC_ALIAS = {
+  'las1':'US-LAS','las2':'US-LAS','las3':'US-LAS','lv1':'US-LAS','lv2':'US-LAS',
+  '3pl':'US-DTN','dtw1':'US-DTN','dtw2':'US-DTN','dtn1':'US-DTN','dtn2':'US-DTN',
+  'phx1':'US-PHX','phx2':'US-PHX',
+  'sea1':'US-SPK','sea2':'US-SPK',
+  'lax1':'US-CSZ','lax2':'US-CSZ',
+  'atl1':'US-EVI','atl2':'US-EVI',
+  'iad1':'US-CMH','iad2':'US-CMH',
+};
+
 // ── Location extraction ───────────────────────────────────────────────────────
 function extractLocation(issue) {
   const f = issue.fields;
 
-  // customfield_11810: Asset LOC — plain string array e.g. ["US-DTN01"]
+  // customfield_11810: Asset LOC — only trust if it resolves to a known site
   const assetLoc = f.customfield_11810;
   if (assetLoc) {
     const raw = Array.isArray(assetLoc) ? assetLoc[0] : String(assetLoc);
-    const m   = raw.match(/^([A-Z]{2}-[A-Z0-9]{2,5})/);
-    if (m) return m[1];
+    const m   = raw.match(/^([A-Z]{2}-[A-Z]{2,4})\d*/);
+    if (m && KNOWN_SITES.has(m[1])) return m[1];
   }
 
-  // customfield_10194: Asset DC
+  // customfield_10194: Asset DC — alias map then direct site code
   const assetDC = f.customfield_10194;
   if (assetDC) {
-    const raw = typeof assetDC === 'object' ? (assetDC.value || assetDC.label || '') : String(assetDC);
-    const m   = raw.match(/^([A-Z]{2}-[A-Z0-9]{2,5})/);
-    if (m) return m[1];
+    const raw = (Array.isArray(assetDC) ? assetDC[0] : (
+      typeof assetDC === 'object' ? (assetDC.value || assetDC.label || '') : String(assetDC)
+    )).trim();
+    const mapped = DC_ALIAS[raw.toLowerCase()];
+    if (mapped) return mapped;
+    const m = raw.match(/^([A-Z]{2}-[A-Z]{2,4})\d*/);
+    if (m && KNOWN_SITES.has(m[1])) return m[1];
   }
 
   return null;
