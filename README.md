@@ -1,16 +1,22 @@
 # DCOPS Jira Dashboard
 
-CoreWeave Data Center Operations — headcount planning, server inventory, and ticket analytics across all DCT sites.
+CoreWeave Data Center Operations — headcount planning, ticket analytics, queue health, and trend visibility across all DCT sites.
+
+> **Two dashboards:**
+> - `http://localhost:3000` — Main DCOPS planning & analytics dashboard
+> - `http://localhost:3000/mbr` — Monthly Business Review (MBR) dashboard
 
 ---
 
 ## What It Does
 
-- **Live ticket data** — pulls from all 7 Jira projects (dct-ops, albatross, eagle, heron, osprey, phoenix, snipecustomer)
-- **Headcount visibility** — employee → site mapping sourced from Jira Assets (People schema)
-- **Server counts** — active servers per site from Jira Assets (snipe-it-infrastructure schema)
-- **Incremental sync** — after the first full load, only changed tickets are fetched (seconds, not minutes)
-- **No proxy needed** — all Jira/Assets API calls are made server-side
+- **194,000+ tickets** synced locally from all 7 Jira projects — no live API calls needed during use
+- **Headcount visibility** — employee → site mapping from Jira Assets, title-based DCT detection
+- **Server counts** — active servers per site from Jira Assets snipe-it-infrastructure schema
+- **Queue health** — open/on-hold/pending tickets per site and per assignee with avg age
+- **Trend analysis** — per-site sparklines across 1d/7d/30d/60d/90d/180d/365d windows
+- **MBR dashboard** — executive-facing monthly summary with closed ticket breakdown by project and site
+- **Incremental sync** — after first load, only changed tickets are fetched (seconds, not minutes)
 
 ---
 
@@ -40,8 +46,6 @@ cd dcops-jira-dashboard
 cp .env.example .env
 ```
 
-Open `.env` and fill in:
-
 | Variable | Where to get it |
 |---|---|
 | `JIRA_EMAIL` | Your Atlassian account email |
@@ -49,7 +53,7 @@ Open `.env` and fill in:
 | `ASSETS_CLIENT_ID` | [developer.atlassian.com → your OAuth app](https://developer.atlassian.com/console/myapps) |
 | `ASSETS_CLIENT_SECRET` | Same OAuth app — Client Secret |
 
-`JIRA_CLOUD_ID` and `ASSETS_WORKSPACE` are pre-filled with CoreWeave's values. Do not change them.
+`JIRA_CLOUD_ID` and `ASSETS_WORKSPACE` are pre-filled with CoreWeave values. Do not change them.
 
 ### 3. Start the server
 
@@ -59,65 +63,66 @@ docker compose up -d
 
 Open **http://localhost:3000** in your browser.
 
-**On first boot**, the server automatically runs a full sync:
-- Tickets: ~5–10 minutes (73k+ tickets)
-- Employees: ~2 minutes
-- Servers: ~15 minutes (323k objects)
+**On first boot**, the server automatically runs a full ticket sync (~5–15 minutes for 194k+ tickets). Employee and server sync must be triggered manually after first boot:
 
-Progress is logged to the container: `docker compose logs -f`
+```bash
+curl -X POST http://localhost:3000/api/sync/employees
+curl -X POST http://localhost:3000/api/sync/servers
+```
 
-After the first sync, all data is stored locally in SQLite (`./data/dcops.db`). Tickets sync incrementally every 30 minutes. Employees and servers sync weekly on Sunday.
+Monitor progress:
+
+```bash
+docker compose logs -f
+```
+
+After the first sync, all data is in SQLite (`./data/dcops.db`). Tickets sync incrementally every 30 minutes. Employees and servers sync weekly on Sunday.
 
 ---
 
-## Updating the Dashboard
+## Dashboards
 
-After pulling new changes from git:
+### Main Dashboard — `http://localhost:3000`
 
-```bash
-git pull
-docker compose up -d --build
-```
+Five tabs:
 
-The database (`./data/`) is stored outside the container and is **never affected by rebuilds**. Downtime is typically under 10 seconds.
+| Tab | What it shows |
+|---|---|
+| **📊 Planning** | Workload & headcount by site. Columns: Total, % Vol, Avg/Day, Avg/Wk, Avg/Mo, Headcount, DCT, T/P/W, Servers, Srvr/HC, MTTR, **Queue Health**, Suggested HC, Gap |
+| **🧮 Matrix** | Assignee × site heatmap + **Queue Status by Assignee** table below (closed 30d vs open/on-hold/pending per person) |
+| **📍 By Site** | Per-site summary cards |
+| **📋 Tickets** | Full ticket list with **Status** column (Closed/Open/On Hold/Pending color badge) |
+| **📈 Trends** | Per-site multi-line chart for DO/SDA/SDE/SDH/SDO/SDP/SDN. Window: 1d/7d/30d/60d/90d/180d/365d. Period-over-period stats and type breakdown |
+
+### MBR Dashboard — `http://localhost:3000/mbr`
+
+Executive monthly summary. Select a month and click **Fetch Data** — instant load from local SQLite.
+
+---
+
+## Project Naming
+
+| DB key | Jira project | Display |
+|---|---|---|
+| `do` | dct-ops | DO |
+| `sda` | service-desk-albatross | SDA |
+| `sde` | service-desk-eagle | SDE |
+| `sdh` | service-desk-heron | SDH |
+| `sdo` | service-desk-osprey | SDO |
+| `sdp` | service-desk-phoenix | SDP |
+| `sds` | service-desk-snipecustomer | SDN |
 
 ---
 
 ## Manual Sync
 
-Trigger a sync immediately via the API without restarting the server:
-
 ```bash
-# Sync tickets only (incremental if previously synced)
-curl -X POST http://localhost:3000/api/sync/tickets
-
-# Sync employees (from Jira Assets)
+curl -X POST http://localhost:3000/api/sync/tickets    # incremental
 curl -X POST http://localhost:3000/api/sync/employees
-
-# Sync server counts (from Jira Assets — takes ~15 min)
 curl -X POST http://localhost:3000/api/sync/servers
-
-# Sync everything
 curl -X POST http://localhost:3000/api/sync/all
+curl -s http://localhost:3000/api/status | python3 -m json.tool
 ```
-
-Check sync status:
-
-```bash
-curl http://localhost:3000/api/status
-```
-
----
-
-## Local Development (without Docker)
-
-```bash
-npm install
-cp .env.example .env   # fill in credentials
-npm run dev            # starts server with hot-reload via nodemon
-```
-
-The dashboard files are served from `public/`. To update the dashboard UI, edit `public/HeadcountPlanning.jsx` and refresh the browser.
 
 ---
 
@@ -126,15 +131,15 @@ The dashboard files are served from `public/`. To update the dashboard UI, edit 
 | Endpoint | Method | Description |
 |---|---|---|
 | `/api/status` | GET | Ticket counts, sync status, active syncs |
-| `/api/tickets` | GET | All tickets. Optional: `?since=ISO_DATE`, `?project=X` |
-| `/api/employees` | GET | Employee → site map `{ "Name": "US-DTN" }` |
-| `/api/servers` | GET | Server counts per site `{ "US-DTN": 9543 }` |
-| `/api/sites` | GET | Aggregated stats per site |
-| `/api/sync/tickets` | POST | Trigger incremental ticket sync |
-| `/api/sync/employees` | POST | Trigger employee sync |
-| `/api/sync/servers` | POST | Trigger server sync |
-| `/api/sync/all` | POST | Trigger full sync of all three |
-| `/api/sync/history` | GET | Last 50 sync runs with status |
+| `/api/tickets` | GET | Tickets. Params: `date_from`, `date_to`, `date_field`, `project`, `page`, `limit` |
+| `/api/tickets/open` | GET | Open/on-hold/pending tickets by site and by assignee with age stats |
+| `/api/tickets/by-site-project` | GET | Closed tickets by site+project (employee site fallback). Params: `date_from`, `date_to`, `date_field` |
+| `/api/employees` | GET | `{ employees, dctList, dctBySite, total }` |
+| `/api/servers` | GET | Server counts per site |
+| `/api/sites` | GET | Aggregated ticket + headcount + server stats per site |
+| `/api/trends` | GET | Time-series by site+project. Param: `window` (1d/7d/30d/60d/90d/180d/365d) |
+| `/api/sync/*` | POST | Trigger syncs: `tickets`, `employees`, `servers`, `all` |
+| `/api/sync/history` | GET | Last 50 sync runs |
 
 ---
 
@@ -143,78 +148,223 @@ The dashboard files are served from `public/`. To update the dashboard UI, edit 
 ```
 dcops-jira-dashboard/
 ├── src/
-│   ├── server.js          # Express API + static file serving
-│   ├── db.js              # SQLite initialization + migration runner
+│   ├── server.js              # Express API + static file serving
+│   ├── db.js                  # SQLite init + migration runner
 │   └── sync/
-│       ├── index.js       # Sync orchestrator + cron scheduler
-│       ├── tickets.js     # Jira ticket sync (incremental)
-│       ├── employees.js   # Jira Assets employee sync
-│       └── servers.js     # Jira Assets server count sync
+│       ├── index.js           # Cron scheduler + orchestrator
+│       ├── tickets.js         # Jira ticket sync + location extraction
+│       ├── employees.js       # Jira Assets sync + title-based DCT detection
+│       └── servers.js         # Jira Assets server count sync
 ├── migrations/
-│   └── 001_initial_schema.sql
+│   ├── 001_initial_schema.sql
+│   ├── 002_drop_raw_json.sql
+│   └── 003_add_employee_title.sql
 ├── public/
-│   ├── index.html
-│   ├── HeadcountPlanning.jsx
-│   └── MBRDashboard.jsx
-├── data/                  # SQLite database — gitignored, Docker volume
+│   ├── index.html             # Main dashboard entry
+│   ├── mbr.html               # MBR dashboard entry
+│   ├── DCOPSJiraDashboard.jsx # Main dashboard React component
+│   ├── MBRDashboard.jsx       # MBR React component
+│   ├── bundle.js              # Built by esbuild at Docker build time
+│   └── mbr-bundle.js          # MBR bundle (Recharts bundled directly)
+├── build.js                   # esbuild config — builds both bundles
+├── data/                      # SQLite DB — gitignored, Docker volume
 ├── Dockerfile
 ├── docker-compose.yml
-├── .env.example           # Credential template — safe to commit
-├── .env                   # Real credentials — NEVER commit
+├── .env.example
 └── package.json
 ```
 
 ---
 
+## DCT Detection
+
+DCT membership is detected at sync time from Jira Assets job titles — no hardcoded name list. Covers both "Data Center" (American) and "Data Centre" (British) spellings. To refresh:
+
+```bash
+curl -X POST http://localhost:3000/api/sync/employees
+docker compose logs -f | grep "sync:employees"
+```
+
+---
+
+## Location Resolution
+
+Tickets have two location fields:
+
+1. `customfield_11810` — rack-level string (e.g. `US-DTN01`, `US-WEST-07A`)
+2. `customfield_10194` — DC alias (e.g. `las1`, `3PL`)
+
+Resolution order:
+1. `customfield_11810` validated against known site codes — rejects aliases like `US-WEST`
+2. `customfield_10194` mapped via alias table (`las1` → `US-LAS`, `3PL` → `US-DTN`)
+3. Assignee's employee site as fallback (covers ~50% of service desk tickets)
+
+---
+
 ## Sync Schedule
 
-| Data | Schedule | Method |
-|---|---|---|
-| Tickets | Every 30 minutes (incremental) | Jira REST API with `updated >=` cursor |
-| Employees | Every Sunday at 2am | Jira Assets — People schema 128, objectId range scan |
-| Servers | Every Sunday at 3am | Jira Assets — schema 127, rack location attribute |
+| Data | Schedule |
+|---|---|
+| Tickets | Every 30 min (incremental) |
+| Employees | Every Sunday at 2am |
+| Servers | Every Sunday at 3am |
 
 ---
 
-## Credential Requirements
+## Updating
 
-### Jira API Token (`JIRA_EMAIL` + `JIRA_TOKEN`)
-- Must have read access to: `dct-ops`, `service-desk-albatross`, `service-desk-eagle`, `service-desk-heron`, `service-desk-osprey`, `service-desk-phoenix`, `service-desk-snipecustomer`
-
-### Jira Assets OAuth2 App (`ASSETS_CLIENT_ID` + `ASSETS_CLIENT_SECRET`)
-- Must have the `read:cmdb` scope
-- Managed at [developer.atlassian.com/console/myapps](https://developer.atlassian.com/console/myapps)
-
----
-
-## Hosting on an Internal Server
-
-1. Deploy the server on any VM accessible via VPN
-2. Set `PORT=3000` (or any port) in `.env`
-3. Team members on VPN access it at `http://<server-ip>:3000`
-4. No individual credential setup required — credentials live on the server only
-
-For automatic deploys on git push, add this to your CI pipeline:
-
-```yaml
-deploy:
-  only: [main]
-  script:
-    - ssh deploy@your-server "cd dcops-jira-dashboard && git pull && docker compose up -d --build"
+```bash
+git pull
+docker compose up -d --build
 ```
+
+The database (`./data/`) is a Docker volume — never wiped by rebuilds.
 
 ---
 
 ## Troubleshooting
 
-**Dashboard shows no data after startup**
-→ The initial sync is still running. Check progress: `docker compose logs -f`
+### Dashboard shows no data after startup
+Initial sync is still running. Monitor:
+```bash
+docker compose logs -f | grep "sync:tickets"
+```
+Expect 5–15 minutes on first boot.
 
-**Ticket sync returns 0 results**
-→ Verify `JIRA_TOKEN` is valid at `http://localhost:3000/api/status`. Regenerate at [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens) if expired.
+---
 
-**Employee or server sync fails with 401**
-→ The OAuth app token has expired or the `read:cmdb` scope is missing. Check with your Jira admin.
+### Employees / servers show 0 after restart
+These don't auto-sync on restart. Trigger manually:
+```bash
+curl -X POST http://localhost:3000/api/sync/employees
+curl -X POST http://localhost:3000/api/sync/servers
+```
 
-**Port 3000 already in use**
-→ Set `PORT=3001` (or any available port) in `.env` and restart.
+---
+
+### Trends tab — blank chart or site dropdown empty
+The endpoint is returning empty data. Verify:
+
+```bash
+curl -s "http://localhost:3000/api/trends?window=30d" | python3 -c "import json,sys; d=json.load(sys.stdin); print('sites:', len(d['sites']), 'labels:', len(d['labels']))"
+```
+
+If `sites: 0` — the `strftime` fix may be missing from the container. Check:
+```bash
+docker exec dcops-dashboard grep "strftime" /app/src/server.js | grep SUBSTR
+```
+
+If no output, force a clean rebuild:
+```bash
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+```
+
+---
+
+### MBR dashboard shows "Failed to fetch"
+Ticket sync hasn't completed or the selected month has no data. Check:
+```bash
+# Ticket count
+curl -s http://localhost:3000/api/status | python3 -c "import json,sys; d=json.load(sys.stdin); print('tickets:', d['tickets']['count'])"
+
+# Test a specific month
+curl -s "http://localhost:3000/api/tickets?date_from=2026-03-01&date_to=2026-03-31&limit=1" | python3 -c "import json,sys; d=json.load(sys.stdin); print('March 2026:', d['total'])"
+```
+
+---
+
+### Container crash-looping on startup
+Check logs for the specific error:
+```bash
+docker compose logs --tail=30
+```
+
+Common causes:
+- **`Cannot find module './employees'`** — `src/sync/employees.js` is missing from the image. Verify it's committed and rebuild.
+- **`npm ci` fails** — missing `package-lock.json`. Generate and commit: `npm install --package-lock-only && git add package-lock.json && git commit`
+
+---
+
+### Docker build uses cached layers — changes not picked up
+```bash
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+```
+
+---
+
+### Jira API token expired (401 on sync)
+Regenerate at [id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens), update `.env`, restart:
+```bash
+docker compose up -d
+```
+
+---
+
+### Assets OAuth expired (employee/server sync fails)
+OAuth tokens auto-refresh each run. If failing, verify `ASSETS_CLIENT_ID` and `ASSETS_CLIENT_SECRET` are still valid in the [Atlassian developer console](https://developer.atlassian.com/console/myapps).
+
+---
+
+### Queue Status by Assignee shows all users (not filtered)
+Ensure tickets are loaded first (click Fetch Data in the toolbar), then apply your filters before switching to the Matrix tab. The Queue Status table mirrors exactly who is visible in the heatmap above it.
+
+---
+
+### Port 3000 already in use
+Set `PORT=3001` in `.env` and restart.
+
+---
+
+## Useful One-Liners
+
+```bash
+# Full status check
+curl -s http://localhost:3000/api/status | python3 -m json.tool
+
+# DCT member count
+curl -s http://localhost:3000/api/employees | python3 -c "import json,sys; d=json.load(sys.stdin); print('DCT:', len(d['dctList']), '/ Total:', d['total'])"
+
+# Date range of synced tickets
+docker exec -w /app dcops-dashboard node -e "
+require('dotenv').config();
+const db = require('better-sqlite3')(process.env.DB_PATH||'/app/data/dcops.db');
+console.log(db.prepare('SELECT MIN(created_at) as oldest, MAX(created_at) as newest, COUNT(*) as n FROM tickets').get());
+"
+
+# Open ticket summary by site (top 10)
+curl -s http://localhost:3000/api/tickets/open | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+for s,v in sorted(d['bySite'].items(), key=lambda x:-x[1]['total'])[:10]:
+    print(f'{s}: {v[\"total\"]} open, avg {v[\"avg_age\"]}d')
+"
+
+# Check a ticket's location fields directly via Jira API
+docker exec -w /app dcops-dashboard node -e "
+require('dotenv').config();
+const auth='Basic '+Buffer.from(process.env.JIRA_EMAIL+':'+process.env.JIRA_TOKEN).toString('base64');
+fetch('https://api.atlassian.com/ex/jira/'+process.env.JIRA_CLOUD_ID+'/rest/api/3/issue/DO-12345?fields=customfield_11810,customfield_10194,labels,summary',{headers:{Authorization:auth,Accept:'application/json'}})
+  .then(r=>r.json()).then(d=>console.log(JSON.stringify(d.fields,null,2)));
+"
+```
+
+---
+
+## Recent Changes
+
+| Date | Change |
+|---|---|
+| Apr 2026 | Added **Trends tab** — per-site sparklines, 7 time windows, period-over-period stats |
+| Apr 2026 | Added **Queue Health column** to Planning tab — open count, avg age, on-hold/pending per site |
+| Apr 2026 | Added **Queue Status by Assignee** to Matrix tab — closed (30d) vs open/on-hold/pending, mirrors active filter |
+| Apr 2026 | Added **Status column** to Tickets tab — Closed/Open/On Hold/Pending color badge |
+| Apr 2026 | Added **MBR Dashboard** at `/mbr` — instant load from SQLite, no live Jira calls |
+| Apr 2026 | Fixed **location extraction** — validates against known site codes, adds DC alias map (`las1`→`US-LAS`, `3PL`→`US-DTN`) |
+| Apr 2026 | Fixed **DCT detection** — title-based, covers British spelling ("Data Centre") |
+| Apr 2026 | Fixed **strftime** — uses `SUBSTR(created_at,1,19)` to handle timezone-offset date strings |
+| Apr 2026 | Added **`/api/tickets/open`**, **`/api/trends`**, **`/api/tickets/by-site-project`** endpoints |
+| Apr 2026 | Removed hardcoded `dct-list.js` — DCT data sourced live from Jira Assets |
+| Apr 2026 | Added **`escort` label** to Jira API field access — foundation for future escort ticket metrics |
