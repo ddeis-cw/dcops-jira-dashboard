@@ -2384,10 +2384,11 @@ Jira version: ${d.version || "unknown"}`);
 
         {/* ── Open / On Hold / Pending by Assignee ── */}
         {openData?.byAssignee && (() => {
-          // Use same assignee list as the heatmap above — respects active filters
-          const visSet = new Set(visAssignees);
+          // visAssignees is derived from `filtered` which applies BOTH site + DCT filters
+          // This is the exact same list shown in the heatmap rows above
+          const visSet = new Set(visAssignees.filter(a => a !== "Unassigned"));
           const rows = openData.byAssignee.filter(r =>
-            visSet.has(r.assignee) && (r.open_total > 0 || r.closed_30d > 0)
+            visSet.has(r.assignee)
           ).sort((a,b) => b.open_total - a.open_total);
           if (!rows.length) return null;
           return (
