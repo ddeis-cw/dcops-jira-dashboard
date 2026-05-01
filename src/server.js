@@ -159,14 +159,11 @@ app.get('/api/tickets/by-site-project', (req, res) => {
   try {
     const rows = db.prepare(`
       SELECT
-        SUBSTR(
-          COALESCE(
-            CASE WHEN t.location IS NOT NULL AND t.location != '' THEN t.location END,
-            e.site
-          ),
-          1,
-          6
-        ) AS site,
+        CASE
+          WHEN COALESCE(CASE WHEN t.location IS NOT NULL AND t.location != '' THEN t.location END, e.site) GLOB '*[0-9][0-9]'
+          THEN SUBSTR(COALESCE(CASE WHEN t.location IS NOT NULL AND t.location != '' THEN t.location END, e.site), 1, LENGTH(COALESCE(CASE WHEN t.location IS NOT NULL AND t.location != '' THEN t.location END, e.site))-2)
+          ELSE COALESCE(CASE WHEN t.location IS NOT NULL AND t.location != '' THEN t.location END, e.site)
+        END AS site,
         t.project,
         COUNT(*) AS n
       FROM tickets t
@@ -191,26 +188,73 @@ app.get('/api/tickets/by-site-project', (req, res) => {
   }
 });
 
-// ── API: Sync triggers ────────────────────────────────────────────────────────
-function triggerSync(type, fn) {
-  return (req, res) => {
-    // Check if already running
-    const active = db.prepare(`
-      SELECT id FROM sync_log WHERE type = ? AND status = 'running' LIMIT 1
-    `).get(type);
-    if (active) return res.status(409).json({ error: `${type} sync already in progress` });
+// ── API: Trends — bucketed ticket counts by site+project+time ────────────────
+// ── API: Open tickets — by site and by assignee ───────────────────────────────
+// Returns open/on-hold/pending-verification tickets with age stats
+app.get('/api/tickets/open', (req, res) => {
+  const OPEN_STATUSES = `('Open','In Progress','On Hold','Waiting for Customer','Pending Verification',
+    'Reopened','New','To Do','In Review','Waiting','Pending','Escalated')`;
 
-    // Start async — respond immediately
-    res.json({ message: `${type} sync started`, type });
-    runSync(type, fn, d => {
-      // Log every progress callback so docker compose logs shows real-time status
-      if (d.status) console.log(`[sync:${type}] ${d.status}${d.servers ? ' | ' + d.servers.toLocaleString() + ' servers' : ''}${d.done && d.total ? ' (' + d.done + '/' + d.total + ' pages)' : ''}`);
-    }).catch(e => console.error(`[sync:${type}] Error:`, e.message));
-  };
-}
+  try {
+    // By site
+    const bySite = db.prepare(`
+      SELECT
+        CASE
+          WHEN t.location GLOB '*[0-9][0-9]' THEN SUBSTR(t.location, 1, LENGTH(t.location)-2)
+          ELSE COALESCE(t.location, e.site)
+        END AS site,
+        t.status,
+        COUNT(*) AS n,
+        AVG(CAST((julianday('now') - julianday(SUBSTR(t.created_at,1,10))) AS REAL)) AS avg_age_days,
+        MAX(CAST((julianday('now') - julianday(SUBSTR(t.created_at,1,10))) AS REAL)) AS max_age_days
+      FROM tickets t
+      LEFT JOIN employees e ON t.assignee = e.name
+      WHERE LOWER(t.status) NOT IN ('closed','done','resolved','completed','cancelled','canceled')
+        AND t.status IS NOT NULL AND t.status != ''
+      GROUP BY site, t.status
+      ORDER BY site, n DESC
+    `).all();
 
+    // By assignee — closed count (last 30d) + open breakdown
+    const byAssignee = db.prepare(`
+      SELECT
+        t.assignee,
+        SUM(CASE WHEN LOWER(t.status) IN ('closed','done','resolved','completed')
+              AND t.resolved_at >= date('now','-30 days') THEN 1 ELSE 0 END) AS closed_30d,
+        SUM(CASE WHEN LOWER(t.status) NOT IN ('closed','done','resolved','completed','cancelled','canceled')
+              AND t.status IS NOT NULL AND t.status != '' THEN 1 ELSE 0 END) AS open_total,
+        SUM(CASE WHEN LOWER(t.status) IN ('on hold') THEN 1 ELSE 0 END) AS on_hold,
+        SUM(CASE WHEN LOWER(t.status) IN ('waiting for customer','pending verification','waiting','pending')
+              THEN 1 ELSE 0 END) AS pending_verification,
+        SUM(CASE WHEN LOWER(t.status) IN ('in progress','in review') THEN 1 ELSE 0 END) AS in_progress,
+        AVG(CASE WHEN LOWER(t.status) NOT IN ('closed','done','resolved','completed','cancelled','canceled')
+              AND t.status IS NOT NULL AND t.status != ''
+              THEN CAST((julianday('now') - julianday(SUBSTR(t.created_at,1,10))) AS REAL)
+              ELSE NULL END) AS avg_open_age_days
+      FROM tickets t
+      WHERE t.assignee IS NOT NULL AND t.assignee != '' AND t.assignee != 'Unassigned'
+      GROUP BY t.assignee
+      HAVING open_total > 0 OR closed_30d > 0
+      ORDER BY open_total DESC
+    `).all();
 
-// ── API: Trends ───────────────────────────────────────────────
+    // Pivot bySite into map
+    const siteMap = {};
+    bySite.forEach(r => {
+      if (!r.site) return;
+      if (!siteMap[r.site]) siteMap[r.site] = { total: 0, avg_age: 0, statuses: {} };
+      siteMap[r.site].statuses[r.status] = r.n;
+      siteMap[r.site].total += r.n;
+      siteMap[r.site].avg_age = Math.round(r.avg_age_days || 0);
+      siteMap[r.site].max_age = Math.round(r.max_age_days || 0);
+    });
+
+    res.json({ bySite: siteMap, byAssignee });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/trends', (req, res) => {
   const { window: win = '30d' } = req.query;
   const windowMap = {
@@ -227,12 +271,13 @@ app.get('/api/trends', (req, res) => {
   try {
     const rows = db.prepare(`
       SELECT
-        SUBSTR(COALESCE(
-          CASE WHEN t.location IS NOT NULL AND t.location != '' THEN t.location END,
-          e.site
-        ), 1, 6) AS site,
+        CASE
+          WHEN COALESCE(CASE WHEN t.location IS NOT NULL AND t.location != '' THEN t.location END, e.site) GLOB '*[0-9][0-9]'
+          THEN SUBSTR(COALESCE(CASE WHEN t.location IS NOT NULL AND t.location != '' THEN t.location END, e.site), 1, LENGTH(COALESCE(CASE WHEN t.location IS NOT NULL AND t.location != '' THEN t.location END, e.site))-2)
+          ELSE COALESCE(CASE WHEN t.location IS NOT NULL AND t.location != '' THEN t.location END, e.site)
+        END AS site,
         t.project,
-        strftime(?, SUBSTR(t.created_at, 1, 19)) AS bucket,
+        strftime(?, t.created_at) AS bucket,
         COUNT(*) AS n
       FROM tickets t
       LEFT JOIN employees e ON t.assignee = e.name
@@ -241,8 +286,9 @@ app.get('/api/trends', (req, res) => {
       GROUP BY site, t.project, bucket
       ORDER BY site, bucket
     `).all(cfg.bucket, since);
+
     const bucketSet = new Set(rows.map(r => r.bucket));
-    const labels = [...bucketSet].sort();
+    const labels    = [...bucketSet].sort();
     const map = {};
     rows.forEach(r => {
       if (!r.site) return;
@@ -262,6 +308,24 @@ app.get('/api/trends', (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// ── API: Sync triggers ────────────────────────────────────────────────────────
+function triggerSync(type, fn) {
+  return (req, res) => {
+    // Check if already running
+    const active = db.prepare(`
+      SELECT id FROM sync_log WHERE type = ? AND status = 'running' LIMIT 1
+    `).get(type);
+    if (active) return res.status(409).json({ error: `${type} sync already in progress` });
+
+    // Start async — respond immediately
+    res.json({ message: `${type} sync started`, type });
+    runSync(type, fn, d => {
+      // Log every progress callback so docker compose logs shows real-time status
+      if (d.status) console.log(`[sync:${type}] ${d.status}${d.servers ? ' | ' + d.servers.toLocaleString() + ' servers' : ''}${d.done && d.total ? ' (' + d.done + '/' + d.total + ' pages)' : ''}`);
+    }).catch(e => console.error(`[sync:${type}] Error:`, e.message));
+  };
+}
 
 app.post('/api/sync/tickets',   triggerSync('tickets',   syncTickets));
 app.post('/api/sync/employees', triggerSync('employees', syncEmployees));
@@ -353,5 +417,3 @@ app.listen(PORT, '0.0.0.0', async () => {
 
   console.log('[server] Ready — scheduler will start in 5 minutes\n');
 });
-
-// ── API: Trends ───────────────────────────────────────────────────────────────

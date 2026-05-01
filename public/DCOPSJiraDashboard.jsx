@@ -1523,6 +1523,7 @@ export default function App() {
   const [trendsSort,   setTrendsSort]   = useState("vol");
   const [trendsLoading,setTrendsLoading]= useState(false);
   const [trendsSite,   setTrendsSite]   = useState("");
+  const [openData,     setOpenData]     = useState(null); // { bySite, byAssignee }
 
   // Jira fetch state
   const [fetchProgress, setFetchProgress] = useState(null); // { done, total, status }
@@ -1689,6 +1690,12 @@ Jira version: ${d.version || "unknown"}`);
       setFetchProgress(null);
       resetCache();
       loadParsed(parsed, "jira");
+
+      // Fetch open ticket data in parallel
+      fetch('/api/tickets/open')
+        .then(r => r.json())
+        .then(d => setOpenData(d))
+        .catch(() => {});
 
     } catch(err) {
       setIsFetching(false);
@@ -2178,7 +2185,7 @@ Jira version: ${d.version || "unknown"}`);
           <div style={{ overflowX:"auto" }}>
             <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
               <thead><tr style={{ background:"#0f172a" }}>
-                {["Site","Total","% Vol","Avg/Day","Avg/Wk","Avg/Mo","Headcount","DCT","T/P/W (Roster)","Servers","Srvr/HC","MTTR","Suggested HC","Gap"].map(h=>(
+                {["Site","Total","% Vol","Avg/Day","Avg/Wk","Avg/Mo","Headcount","DCT","T/P/W (Roster)","Servers","Srvr/HC","MTTR","Queue Health","Suggested HC","Gap"].map(h=>(
                   <th key={h}
                     onClick={()=>{ if(planSortCol===h){setPlanSortDir(d=>d==='desc'?'asc':'desc');}else{setPlanSortCol(h);setPlanSortDir('desc');} }}
                     style={{ padding:"8px 10px", textAlign:"left", color:planSortCol===h?"#e2e8f0":"#94a3b8",
@@ -2268,6 +2275,28 @@ Jira version: ${d.version || "unknown"}`);
                           ) : <span style={{ color:"#475569" }}>—</span>;
                         })()}
                       </td>
+                      <td style={{ padding:"9px 10px" }}>
+                        {(() => {
+                          const od = openData?.bySite?.[loc];
+                          if (!od) return <span style={{ color:"#334155" }}>—</span>;
+                          const avgAge = od.avg_age || 0;
+                          const ageCol = avgAge > 14 ? "#ef4444" : avgAge > 7 ? "#f59e0b" : "#22c55e";
+                          const onHold = od.statuses?.["On Hold"] || 0;
+                          const pending = Object.entries(od.statuses || {})
+                            .filter(([s]) => /wait|verif|pending/i.test(s))
+                            .reduce((a,[,n]) => a+n, 0);
+                          return (
+                            <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
+                              <div style={{ display:"flex", gap:4, alignItems:"center" }}>
+                                <span style={badge(ageCol)}>{od.total} open</span>
+                                <span style={{ fontSize:9, color:ageCol }}>{avgAge}d avg</span>
+                              </div>
+                              {onHold > 0 && <span style={{ fontSize:9, color:"#f59e0b" }}>⏸ {onHold} on hold</span>}
+                              {pending > 0 && <span style={{ fontSize:9, color:"#6366f1" }}>⏳ {pending} pending</span>}
+                            </div>
+                          );
+                        })()}
+                      </td>
                       <td style={{ padding:"9px 10px", fontWeight:700, fontSize:16, color:gap>0?"#ef4444":"#10b981" }}>{suggested}</td>
                       <td style={{ padding:"9px 10px" }}>
                         <span style={{ fontWeight:600, color:gap>0?"#ef4444":gap<0?"#22d3ee":"#10b981", fontSize:12 }}>
@@ -2307,6 +2336,7 @@ Jira version: ${d.version || "unknown"}`);
 
       {/* ── MATRIX TAB ── */}
       {activeTab === "matrix" && (
+        <>
         <div style={card()}>
           <div style={{ color:"#e2e8f0", fontWeight:700, fontSize:14, marginBottom:12 }}>🧮 Assignee × Site Heat Map</div>
           <div style={{ overflowX:"auto" }}>
@@ -2351,6 +2381,68 @@ Jira version: ${d.version || "unknown"}`);
             </table>
           </div>
         </div>
+
+        {/* ── Open / On Hold / Pending by Assignee ── */}
+        {openData?.byAssignee && (() => {
+          // Filter to assignees visible in current matrix view
+          const rows = openData.byAssignee.filter(r =>
+            activeAssignees.has(r.assignee) && (r.open_total > 0 || r.closed_30d > 0)
+          ).sort((a,b) => b.open_total - a.open_total);
+          if (!rows.length) return null;
+          return (
+            <div style={{ ...card(), marginTop:12 }}>
+              <div style={{ color:"#e2e8f0", fontWeight:700, fontSize:14, marginBottom:12 }}>
+                📬 Queue Status · By Assignee
+                <span style={{ fontSize:11, color:"#64748b", fontWeight:400, marginLeft:10 }}>
+                  open / on hold / pending verification vs closed (last 30d)
+                </span>
+              </div>
+              <div style={{ overflowX:"auto" }}>
+                <table style={{ borderCollapse:"collapse", fontSize:10, width:"100%" }}>
+                  <thead>
+                    <tr style={{ background:"#0f172a" }}>
+                      {["Assignee","Closed 30d","Open Total","In Progress","On Hold","Pending/Verif","Avg Open Age"].map(h=>(
+                        <th key={h} style={{ padding:"7px 10px", textAlign:h==="Assignee"?"left":"center",
+                          color:"#94a3b8", fontWeight:600, borderBottom:"1px solid #334155",
+                          whiteSpace:"nowrap", fontSize:10 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r,i) => {
+                      const ageCol = (r.avg_open_age_days||0) > 14 ? "#ef4444" : (r.avg_open_age_days||0) > 7 ? "#f59e0b" : "#22c55e";
+                      return (
+                        <tr key={r.assignee} style={{ background:i%2===0?"#0f172a":"#111827", borderBottom:"1px solid #1e293b" }}>
+                          <td style={{ padding:"6px 10px", fontWeight:600, color:"#e2e8f0", borderRight:"1px solid #334155", whiteSpace:"nowrap" }}>
+                            {r.assignee}
+                            {DCT_LIST.has(r.assignee) && <span style={{ marginLeft:6, fontSize:9, color:"#6366f1", background:"#6366f122", padding:"1px 5px", borderRadius:3 }}>DCT</span>}
+                          </td>
+                          <td style={{ padding:"6px 10px", textAlign:"center" }}>
+                            <span style={{ background:"#22c55e22", color:"#22c55e", borderRadius:4, padding:"2px 8px", fontWeight:700 }}>{r.closed_30d}</span>
+                          </td>
+                          <td style={{ padding:"6px 10px", textAlign:"center" }}>
+                            {r.open_total > 0
+                              ? <span style={{ background:"#ef444422", color:"#ef4444", borderRadius:4, padding:"2px 8px", fontWeight:700 }}>{r.open_total}</span>
+                              : <span style={{ color:"#334155" }}>—</span>}
+                          </td>
+                          <td style={{ padding:"6px 10px", textAlign:"center", color: r.in_progress > 0 ? "#3b82f6" : "#334155" }}>{r.in_progress || "—"}</td>
+                          <td style={{ padding:"6px 10px", textAlign:"center", color: r.on_hold > 0 ? "#f59e0b" : "#334155" }}>{r.on_hold || "—"}</td>
+                          <td style={{ padding:"6px 10px", textAlign:"center", color: r.pending_verification > 0 ? "#a855f7" : "#334155" }}>{r.pending_verification || "—"}</td>
+                          <td style={{ padding:"6px 10px", textAlign:"center" }}>
+                            {r.avg_open_age_days
+                              ? <span style={{ color:ageCol, fontWeight:600 }}>{Math.round(r.avg_open_age_days)}d</span>
+                              : <span style={{ color:"#334155" }}>—</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
+        </>
       )}
 
       {/* ── BY SITE TAB ── */}
