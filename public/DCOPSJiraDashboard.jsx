@@ -2581,7 +2581,7 @@ Jira version: ${d.version || "unknown"}`);
         const siteKeys = trendsData ? Object.keys(trendsData.sites).sort() : [];
         const activeSite = (trendsSite && siteKeys.includes(trendsSite)) ? trendsSite : (siteKeys[0] || "");
         const sd    = trendsData && activeSite ? (trendsData.sites[activeSite] || {}) : {};
-        const labels = trendsData ? trendsData.labels : [];
+        const labels = trendsData ? (trendsData.labels||[]).filter(Boolean) : [];
         const pts    = labels.length;
 
         // Chart helpers
@@ -2616,7 +2616,7 @@ Jira version: ${d.version || "unknown"}`);
           const avg  = arr.length ? Math.round(arr.reduce((a,v)=>a+v,0) / arr.length) : 0;
           const peak = Math.max(...arr, 0);
           const peakIdx = arr.indexOf(peak);
-          const peakLbl = labels[peakIdx] ? labels[peakIdx].slice(0,10) : "—";
+          const peakLbl = labels[peakIdx] ? (labels[peakIdx]||"").slice(0,10) : "—";
           return { cur, prev, pct, avg, peak, peakLbl };
         };
 
@@ -2625,8 +2625,8 @@ Jira version: ${d.version || "unknown"}`);
         const totalPrev = PROJS.reduce((s,p) => s + sumHalf(sd[p.k]||[], prevHalf), 0);
         const totalPct  = totalPrev > 0 ? ((totalCur - totalPrev) / totalPrev * 100) : 0;
 
-        const prevLabel = labels[prevHalf.start] ? labels[prevHalf.start].slice(0,10) : "—";
-        const curLabel  = labels[curHalf.start]  ? labels[curHalf.start].slice(0,10)  : "—";
+        const prevLabel = labels[prevHalf.start] ? (labels[prevHalf.start]||"").slice(0,10) : "—";
+        const curLabel  = labels[curHalf.start]  ? (labels[curHalf.start]||"").slice(0,10)  : "—";
         const lastPeriodLabel = curLabel;
 
         if(trendsLoading) return <div style={{color:"#64748b",textAlign:"center",padding:"60px 0",fontSize:13}}>Loading…</div>;
@@ -2701,7 +2701,7 @@ Jira version: ${d.version || "unknown"}`);
                     {labels.map((l,i)=>{
                       const step = Math.max(1,Math.floor(pts/8));
                       if(i%step!==0 && i!==pts-1) return null;
-                      return <text key={i} x={xPx(i).toFixed(1)} y={H-8} textAnchor="middle" fill="#475569" fontSize="9">{l.slice(0,7)}</text>;
+                      return <text key={i} x={xPx(i).toFixed(1)} y={H-8} textAnchor="middle" fill="#475569" fontSize="9">{(l||"").slice(0,7)}</text>;
                     })}
                     {/* lines + dots */}
                     {PROJS.map(p=>{
