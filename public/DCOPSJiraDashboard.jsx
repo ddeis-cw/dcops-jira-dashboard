@@ -2512,29 +2512,44 @@ Jira version: ${d.version || "unknown"}`);
         <div style={{ overflowX:"auto", borderRadius:10, border:"1px solid #334155" }}>
           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
             <thead style={{ background:"#1e293b" }}><tr>
-              {["Key","Summary","Assignee","Reporter","Priority","Site","Created"].map(h=>(
+              {["Key","Summary","Assignee","Reporter","Priority","Site","Created","Status"].map(h=>(
                 <th key={h} style={{ padding:"8px 10px", textAlign:"left", color:"#94a3b8", fontSize:10, fontWeight:600, textTransform:"uppercase", whiteSpace:"nowrap" }}>{h}</th>
               ))}
             </tr></thead>
             <tbody>
-              {filtered.map((r,i)=>(
-                <tr key={r.key+i} style={{ background:i%2===0?"#0f172a":"#111827", borderBottom:"1px solid #1e293b" }}>
-                  <td style={{ padding:"7px 10px" }}>
-                    <a href={`https://coreweave.atlassian.net/browse/${r.key}`} target="_blank" rel="noreferrer" style={{ color:"#7dd3fc", textDecoration:"none", fontWeight:600 }}>{r.key}</a>
-                  </td>
-                  <td style={{ padding:"7px 10px", maxWidth:260, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", color:"#e2e8f0" }} title={r.summary}>{r.summary}</td>
-                  <td style={{ padding:"7px 10px", whiteSpace:"nowrap", color:"#e2e8f0" }}>
-                    {r.assignee}
-                    {DCT_LIST.has(r.assignee)&&<span style={{ marginLeft:5, fontSize:9, color:"#6366f1", background:"#6366f122", padding:"1px 5px", borderRadius:3 }}>DCT</span>}
-                  </td>
-                  <td style={{ padding:"7px 10px", whiteSpace:"nowrap", color:"#94a3b8" }}>{r.reporter}</td>
-                  <td style={{ padding:"7px 10px" }}>
-                    <span style={badge(r.priority==="Critical"?"#ef4444":r.priority==="High"?"#f97316":r.priority==="Low"?"#22c55e":"#3b82f6",true)}>{r.priority}</span>
-                  </td>
-                  <td style={{ padding:"7px 10px" }}><span style={badge(locColor(r.location),true)}>{r.location}</span></td>
-                  <td style={{ padding:"7px 10px", color:"#64748b", whiteSpace:"nowrap" }}>{r.created}</td>
-                </tr>
-              ))}
+              {filtered.map((r,i)=>{
+                const isClosed = /^(closed|done|resolved|completed)$/i.test(r.status||"");
+                const isOnHold = /on.hold/i.test(r.status||"");
+                const isPending = /wait|verif|pending/i.test(r.status||"");
+                const statusCol = isClosed ? "#22c55e" : isOnHold ? "#f59e0b" : isPending ? "#a855f7" : "#ef4444";
+                const statusLabel = isClosed ? "Closed" : isOnHold ? "On Hold" : isPending ? "Pending" : "Open";
+                return (
+                  <tr key={r.key+i} style={{ background:i%2===0?"#0f172a":"#111827", borderBottom:"1px solid #1e293b" }}>
+                    <td style={{ padding:"7px 10px" }}>
+                      <a href={`https://coreweave.atlassian.net/browse/${r.key}`} target="_blank" rel="noreferrer" style={{ color:"#7dd3fc", textDecoration:"none", fontWeight:600 }}>{r.key}</a>
+                    </td>
+                    <td style={{ padding:"7px 10px", maxWidth:260, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", color:"#e2e8f0" }} title={r.summary}>{r.summary}</td>
+                    <td style={{ padding:"7px 10px", whiteSpace:"nowrap", color:"#e2e8f0" }}>
+                      {r.assignee}
+                      {DCT_LIST.has(r.assignee)&&<span style={{ marginLeft:5, fontSize:9, color:"#6366f1", background:"#6366f122", padding:"1px 5px", borderRadius:3 }}>DCT</span>}
+                    </td>
+                    <td style={{ padding:"7px 10px", whiteSpace:"nowrap", color:"#94a3b8" }}>{r.reporter}</td>
+                    <td style={{ padding:"7px 10px" }}>
+                      <span style={badge(r.priority==="Critical"?"#ef4444":r.priority==="High"?"#f97316":r.priority==="Low"?"#22c55e":"#3b82f6",true)}>{r.priority}</span>
+                    </td>
+                    <td style={{ padding:"7px 10px" }}><span style={badge(locColor(r.location),true)}>{r.location}</span></td>
+                    <td style={{ padding:"7px 10px", color:"#64748b", whiteSpace:"nowrap" }}>{r.created}</td>
+                    <td style={{ padding:"7px 10px", whiteSpace:"nowrap" }}>
+                      <span style={{
+                        display:"inline-block", padding:"2px 10px", borderRadius:4, fontSize:10,
+                        fontWeight:700, background:statusCol+"22", color:statusCol,
+                        border:`1px solid ${statusCol}44`,
+                      }}>{statusLabel}</span>
+                      {!isClosed && r.status && <div style={{ fontSize:9, color:"#475569", marginTop:2 }}>{r.status}</div>}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
