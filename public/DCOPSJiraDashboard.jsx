@@ -2579,8 +2579,6 @@ Jira version: ${d.version || "unknown"}`);
         };
 
         const siteKeys = trendsData ? Object.keys(trendsData.sites).sort() : [];
-        // Auto-select first site when data first loads
-        if(trendsData && !trendsSite && siteKeys.length) setTrendsSite(siteKeys[0]);
         const activeSite = (trendsSite && siteKeys.includes(trendsSite)) ? trendsSite : (siteKeys[0] || "");
         const sd    = trendsData && activeSite ? (trendsData.sites[activeSite] || {}) : {};
         const labels = trendsData ? trendsData.labels : [];
