@@ -284,6 +284,7 @@ app.get('/api/trends', (req, res) => {
       WHERE t.created_at >= ?
         AND (t.location IS NOT NULL AND t.location != '' OR e.site IS NOT NULL)
       GROUP BY site, t.project, bucket
+      HAVING bucket IS NOT NULL
       ORDER BY site, bucket
     `).all(cfg.bucket, since);
 

@@ -2581,7 +2581,7 @@ Jira version: ${d.version || "unknown"}`);
         const siteKeys = trendsData ? Object.keys(trendsData.sites).sort() : [];
         const activeSite = (trendsSite && siteKeys.includes(trendsSite)) ? trendsSite : (siteKeys[0] || "");
         const sd    = trendsData && activeSite ? (trendsData.sites[activeSite] || {}) : {};
-        const labels = trendsData ? (trendsData.labels||[]).filter(Boolean) : [];
+        const labels = trendsData ? (trendsData.labels||[]) : [];
         const pts    = labels.length;
 
         // Chart helpers
