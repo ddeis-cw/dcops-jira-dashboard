@@ -277,7 +277,7 @@ app.get('/api/trends', (req, res) => {
           ELSE COALESCE(CASE WHEN t.location IS NOT NULL AND t.location != '' THEN t.location END, e.site)
         END AS site,
         t.project,
-        strftime(?, t.created_at) AS bucket,
+        strftime(?, SUBSTR(t.created_at,1,19)) AS bucket,
         COUNT(*) AS n
       FROM tickets t
       LEFT JOIN employees e ON t.assignee = e.name
