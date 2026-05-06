@@ -95,21 +95,29 @@ app.get('/api/tickets', (req, res) => {
 
 // ── API: Employees ────────────────────────────────────────────────────────────
 app.get('/api/employees', (req, res) => {
-  const employees = db.prepare('SELECT * FROM employees ORDER BY name').all();
-  // Return as { "Name": "US-DTN" } map for dashboard compatibility
-  const map = {};
-  const dctSet = [];
-  const dctBySite = {};
-  for (const e of employees) {
-    if (e.site) {
-      map[e.name] = e.site;
-      if (e.is_dct) {
-        dctSet.push(e.name);
-        dctBySite[e.site] = (dctBySite[e.site] || 0) + 1;
+  try {
+    // Apply dct_overrides — ensure people in override table are flagged as DCT
+    try {
+      db.prepare(`UPDATE employees SET is_dct = 1 WHERE name IN (SELECT name FROM dct_overrides) AND is_dct = 0`).run();
+    } catch(e2) { /* table may not exist yet on old installs */ }
+
+    const employees = db.prepare('SELECT * FROM employees ORDER BY name').all();
+    const map = {};
+    const dctSet = [];
+    const dctBySite = {};
+    for (const e of employees) {
+      if (e.site) {
+        map[e.name] = e.site;
+        if (e.is_dct) {
+          dctSet.push(e.name);
+          dctBySite[e.site] = (dctBySite[e.site] || 0) + 1;
+        }
       }
     }
+    res.json({ employees: map, dctList: dctSet, dctBySite, total: employees.length });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
   }
-  res.json({ employees: map, dctList: dctSet, dctBySite, total: employees.length });
 });
 
 // ── API: Servers ──────────────────────────────────────────────────────────────
@@ -308,6 +316,45 @@ app.get('/api/trends', (req, res) => {
   } catch(e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── API: DCT Overrides — manual DCT designation regardless of title ───────────
+app.get('/api/dct-overrides', (req, res) => {
+  try {
+    const rows = db.prepare('SELECT * FROM dct_overrides ORDER BY name').all();
+    res.json({ overrides: rows, total: rows.length });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/dct-overrides', (req, res) => {
+  const { name, note, site } = req.body || {};
+  if (!name) return res.status(400).json({ error: 'name required' });
+  try {
+    // Add to overrides table
+    db.prepare(`INSERT OR REPLACE INTO dct_overrides (name, note) VALUES (?, ?)`).run(name, note || null);
+
+    // Update existing employee record if present
+    const updated = db.prepare(`UPDATE employees SET is_dct = 1 WHERE name = ?`).run(name);
+
+    // If employee not in DB at all (not in Jira Assets), insert a manual record
+    if (updated.changes === 0) {
+      if (!site) return res.status(400).json({ error: `"${name}" not found in employees DB — provide site to create manually` });
+      db.prepare(`
+        INSERT OR IGNORE INTO employees (name, site, is_dct, is_active, title, synced_at)
+        VALUES (?, ?, 1, 1, 'Manual Override (not in Jira Assets)', datetime('now'))
+      `).run(name, site);
+      console.log(`[dct-override] Inserted manual employee record: ${name} → ${site}`);
+    }
+
+    res.json({ ok: true, name, site: site || 'existing record updated' });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/dct-overrides/:name', (req, res) => {
+  try {
+    db.prepare(`DELETE FROM dct_overrides WHERE name = ?`).run(req.params.name);
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── API: Sync triggers ────────────────────────────────────────────────────────

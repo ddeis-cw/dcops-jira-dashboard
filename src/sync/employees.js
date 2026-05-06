@@ -53,26 +53,54 @@ const DCT_TITLE_KEYWORDS = [
   'data center engineer',
   'data center lead',
   'data center manager',
+  'data center director',
   'data center specialist',
   'data center operations',
   'data center field',
   'data center site',
+  'data center supervisor',
+  'data center coordinator',
   // British/European spelling
   'data centre technician',
   'data centre engineer',
   'data centre lead',
   'data centre manager',
+  'data centre director',
   'data centre specialist',
   'data centre operations',
   'data centre field',
   'data centre site',
-  // Other DC ops titles
+  'data centre supervisor',
+  'data centre coordinator',
+  // Abbreviated / shorthand
   'dc operations',
+  'dc manager',
+  'dc lead',
+  'dc tech',
+  'dc director',
+  'dc supervisor',
   'dct',
+  // Field / infrastructure
   'field operations technician',
+  'field operations manager',
+  'field operations lead',
+  'field operations director',
   'infrastructure technician',
+  'infrastructure engineer',
+  'infrastructure lead',
+  'infrastructure manager',
   'onsite build lead',
-  'area data cent',  // catches both "area data center" and "area data centre"
+  'area data cent',    // catches both "area data center" and "area data centre"
+  // Broader DC ops leadership
+  'regional data center',
+  'regional dc',
+  'colo technician',
+  'colo engineer',
+  'colo manager',
+  'data hall',
+  'physical infrastructure',
+  'site operations manager',
+  'site operations director',
 ];
 
 function isDCTTitle(title) {
