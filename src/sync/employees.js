@@ -3,14 +3,10 @@
  *
  * Syncs employee → site mappings from Jira Assets (People schema 128, type 908).
  *
- * DCT identification: determined dynamically from job title (attr=3294).
- * No hardcoded names — zero PII in the codebase.
- *
- * DCT title keywords (case-insensitive):
- *   "Data Center Technician", "Data Center Engineer", "Data Center Lead",
- *   "Data Center Manager", "Data Center Specialist", "Data Center Operations",
- *   "DC Operations", "DCT", "Field Operations Technician",
- *   "Infrastructure Technician", "Data Center Field"
+ * DCT identification: LOCODE-based only.
+ *   An employee is a DCT if and only if they have a DC Location (LOCODE)
+ *   assigned in Jira Assets (attr=3304). No title matching — the Assets
+ *   database is the single source of truth for DCT designation.
  *
  * Site extraction: attr=3304 (DC Location linked object, label = "US-DTN01")
  *   → strip trailing 2-digit suffix → "US-DTN"
@@ -36,7 +32,7 @@ const CLIENT_SECRET = process.env.ASSETS_CLIENT_SECRET;
 const ATTR_FIRST   = '3290';  // First name
 const ATTR_LAST    = '3291';  // Last name
 const ATTR_EMAIL   = '3292';  // Email
-const ATTR_TITLE   = '3294';  // Job title → used for DCT detection
+const ATTR_TITLE   = '3294';  // Job title (stored for reference only — not used for DCT detection)
 const ATTR_STATUS  = '3297';  // "Active" / "Inactive"
 const ATTR_DC_LOC  = '3304';  // DC Location (linked object, label = "US-DTN01")
 
@@ -46,68 +42,6 @@ const RANGE_END   = 910000;
 const CHUNK       = 15;
 const CONCURRENCY = 4;
 
-// ── DCT title detection ───────────────────────────────────────────────────────
-const DCT_TITLE_KEYWORDS = [
-  // American spelling
-  'data center technician',
-  'data center engineer',
-  'data center lead',
-  'data center manager',
-  'data center director',
-  'data center specialist',
-  'data center operations',
-  'data center field',
-  'data center site',
-  'data center supervisor',
-  'data center coordinator',
-  // British/European spelling
-  'data centre technician',
-  'data centre engineer',
-  'data centre lead',
-  'data centre manager',
-  'data centre director',
-  'data centre specialist',
-  'data centre operations',
-  'data centre field',
-  'data centre site',
-  'data centre supervisor',
-  'data centre coordinator',
-  // Abbreviated / shorthand
-  'dc operations',
-  'dc manager',
-  'dc lead',
-  'dc tech',
-  'dc director',
-  'dc supervisor',
-  'dct',
-  // Field / infrastructure
-  'field operations technician',
-  'field operations manager',
-  'field operations lead',
-  'field operations director',
-  'infrastructure technician',
-  'infrastructure engineer',
-  'infrastructure lead',
-  'infrastructure manager',
-  'onsite build lead',
-  'area data cent',    // catches both "area data center" and "area data centre"
-  // Broader DC ops leadership
-  'regional data center',
-  'regional dc',
-  'colo technician',
-  'colo engineer',
-  'colo manager',
-  'data hall',
-  'physical infrastructure',
-  'site operations manager',
-  'site operations director',
-];
-
-function isDCTTitle(title) {
-  if (!title) return false;
-  const lower = title.toLowerCase();
-  return DCT_TITLE_KEYWORDS.some(kw => lower.includes(kw));
-}
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 function getAccessToken() {
@@ -200,7 +134,7 @@ const upsertMany = db.transaction(rows => {
 async function syncEmployees(onProgress) {
   const useBasic = !!(process.env.JIRA_EMAIL && process.env.JIRA_TOKEN);
   console.log(`[sync:employees] Auth: ${useBasic ? 'Basic (JIRA_TOKEN)' : 'OAuth2'}`);
-  console.log(`[sync:employees] DCT detection: title-based (no hardcoded names)`);
+  console.log(`[sync:employees] DCT detection: LOCODE-based (has site = is DCT)`);
 
   const token   = await getAccessToken();
   const now     = new Date().toISOString();
@@ -245,7 +179,8 @@ async function syncEmployees(onProgress) {
 
             const fullName = [first, last].filter(Boolean).join(' ');
             if (fullName && isActive && site) {
-              results.set(fullName, { site, title, email, is_dct: isDCTTitle(title) });
+              // DCT = has a LOCODE assigned in Assets (site is not null)
+              results.set(fullName, { site, title, email, is_dct: !!site });
             }          }
         }
         chunksDone++;
