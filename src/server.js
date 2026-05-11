@@ -510,7 +510,24 @@ app.get('/api/mbr2/sites', (req, res) => {
 
   const toMap = rows => {
     const map = {};
-    rows.forEach(r => { if (r.site) map[r.site] = r; });
+    rows.forEach(r => {
+      if (!r.site) return;
+      if (!map[r.site]) {
+        map[r.site] = { ...r };
+      } else {
+        // Merge duplicate site entries caused by multi-row GROUP BY edge cases
+        map[r.site].total   = (map[r.site].total   || 0) + (r.total   || 0);
+        map[r.site].closed  = (map[r.site].closed  || 0) + (r.closed  || 0);
+        map[r.site].on_hold = (map[r.site].on_hold || 0) + (r.on_hold || 0);
+        map[r.site].open    = (map[r.site].open    || 0) + (r.open    || 0);
+        // avg_mttr_hours: weighted average
+        if (r.avg_mttr_hours) {
+          map[r.site].avg_mttr_hours = map[r.site].avg_mttr_hours
+            ? (map[r.site].avg_mttr_hours + r.avg_mttr_hours) / 2
+            : r.avg_mttr_hours;
+        }
+      }
+    });
     return map;
   };
 
