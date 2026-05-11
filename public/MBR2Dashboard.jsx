@@ -98,40 +98,98 @@ function SiteRow({ site, curr, prev, mom_pct, mom_delta, rank }) {
   );
 }
 
-const CW_DARK  = "#003366";  // CoreWeave dark blue — closed line
-const CW_LIGHT = "#7eb6ff";  // CoreWeave light blue — total dashed
+const CW_DARK   = "#003366";  // CoreWeave dark blue — closed line
+const CW_LIGHT  = "#7eb6ff";  // CoreWeave light blue — total dashed
+const MTTR_RED  = "#ef4444";  // MTTR line
 
 function TrendChart({ months }) {
   if (!months || months.length === 0) return null;
-  const W=560, H=110, padL=38, padB=22, padT=8, padR=12;
+  const W=580, H=140, padL=44, padB=26, padT=12, padR=50;
   const cW=W-padL-padR, cH=H-padB-padT;
-  const maxV = Math.max(...months.map(m=>m.total), 1);
   const pts = months.length;
-  const xPx = i => padL + (pts>1 ? (i/(pts-1))*cW : cW/2);
-  const yPx = v => padT + cH - (v/maxV)*cH;
 
-  const closedPts = months.map((m,i) => `${xPx(i).toFixed(1)},${yPx(m.closed).toFixed(1)}`).join(" ");
-  const totalPts  = months.map((m,i) => `${xPx(i).toFixed(1)},${yPx(m.total).toFixed(1)}`).join(" ");
+  // Left axis: ticket volume
+  const maxV = Math.max(...months.map(m=>m.total), 1);
+  const xPx  = i  => padL + (pts>1 ? (i/(pts-1))*cW : cW/2);
+  const yPxV = v  => padT + cH - (v/maxV)*cH;
+
+  // Right axis: MTTR hours (separate scale)
+  const mttrVals = months.map(m=>m.avg_mttr_hours||0).filter(v=>v>0);
+  const maxM = mttrVals.length > 0 ? Math.max(...mttrVals) * 1.15 : 1;
+  const yPxM = v  => padT + cH - (v/maxM)*cH;
+
+  const closedPts = months.map((m,i) => `${xPx(i).toFixed(1)},${yPxV(m.closed).toFixed(1)}`).join(" ");
+  const totalPts  = months.map((m,i) => `${xPx(i).toFixed(1)},${yPxV(m.total).toFixed(1)}`).join(" ");
+  const mttrPts   = months.filter(m=>m.avg_mttr_hours).map((m,i) => {
+    const origI = months.indexOf(m);
+    return `${xPx(origI).toFixed(1)},${yPxM(m.avg_mttr_hours).toFixed(1)}`;
+  }).join(" ");
+
+  // Area fill under closed line
+  const areaPath = `M${padL},${padT+cH} ` +
+    months.map((m,i) => `L${xPx(i).toFixed(1)},${yPxV(m.closed).toFixed(1)}`).join(" ") +
+    ` L${xPx(pts-1).toFixed(1)},${padT+cH} Z`;
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display:"block" }}>
+      <defs>
+        <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"   stopColor={CW_DARK} stopOpacity=".25"/>
+          <stop offset="100%" stopColor={CW_DARK} stopOpacity=".02"/>
+        </linearGradient>
+      </defs>
+
+      {/* Grid lines + left Y-axis labels */}
       {[0,.25,.5,.75,1].map((f,i) => (
         <g key={i}>
-          <line x1={padL} y1={yPx(maxV*f).toFixed(1)} x2={W-padR} y2={yPx(maxV*f).toFixed(1)}
+          <line x1={padL} y1={yPxV(maxV*f).toFixed(1)} x2={W-padR} y2={yPxV(maxV*f).toFixed(1)}
             stroke="#e2e8f0" strokeWidth=".7"/>
-          <text x={padL-4} y={parseFloat(yPx(maxV*f).toFixed(1))+3} textAnchor="end" fill="#94a3b8" fontSize="7">
-            {maxV*f >= 1000 ? `${Math.round(maxV*f/1000)}k` : Math.round(maxV*f)}
+          <text x={padL-5} y={parseFloat(yPxV(maxV*f).toFixed(1))+3} textAnchor="end" fill="#64748b" fontSize="7.5">
+            {maxV*f>=1000?`${Math.round(maxV*f/1000)}k`:Math.round(maxV*f)}
           </text>
         </g>
       ))}
+
+      {/* Right Y-axis labels for MTTR */}
+      {mttrVals.length > 0 && [0,.5,1].map((f,i) => (
+        <text key={i} x={W-padR+6} y={parseFloat(yPxM(maxM*f).toFixed(1))+3}
+          textAnchor="start" fill={MTTR_RED} fontSize="7" opacity=".8">
+          {Math.round(maxM*f)}h
+        </text>
+      ))}
+
+      {/* X-axis month labels */}
       {months.map((m,i) => i%(Math.max(1,Math.floor(pts/11)))==0 && (
-        <text key={i} x={xPx(i).toFixed(1)} y={H-4} textAnchor="middle" fill="#64748b" fontSize="7.5">{m.month?.slice(0,7)}</text>
+        <text key={i} x={xPx(i).toFixed(1)} y={H-6} textAnchor="middle" fill="#64748b" fontSize="7.5">
+          {m.month?.slice(0,7)}
+        </text>
       ))}
+
+      {/* Area fill under closed */}
+      <path d={areaPath} fill="url(#areaGrad)"/>
+
+      {/* Total — light blue dashed */}
       <polyline points={totalPts} fill="none" stroke={CW_LIGHT} strokeWidth="1.5" strokeDasharray="5,3"/>
-      <polyline points={closedPts} fill="none" stroke={CW_DARK} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+
+      {/* Closed — dark CoreWeave blue solid */}
+      <polyline points={closedPts} fill="none" stroke={CW_DARK} strokeWidth="2.5"
+        strokeLinecap="round" strokeLinejoin="round"/>
       {months.map((m,i) => (
-        <circle key={i} cx={xPx(i).toFixed(1)} cy={yPx(m.closed).toFixed(1)} r="3" fill={CW_DARK}/>
+        <circle key={i} cx={xPx(i).toFixed(1)} cy={yPxV(m.closed).toFixed(1)} r="3" fill={CW_DARK}/>
       ))}
+
+      {/* MTTR — red line on right axis */}
+      {mttrPts && (
+        <>
+          <polyline points={mttrPts} fill="none" stroke={MTTR_RED} strokeWidth="1.8"
+            strokeDasharray="3,2" strokeLinecap="round"/>
+          {months.filter(m=>m.avg_mttr_hours).map(m => {
+            const i = months.indexOf(m);
+            return <circle key={i} cx={xPx(i).toFixed(1)} cy={yPxM(m.avg_mttr_hours).toFixed(1)}
+              r="2.5" fill={MTTR_RED}/>;
+          })}
+        </>
+      )}
     </svg>
   );
 }
@@ -305,10 +363,21 @@ export default function MBR2Dashboard() {
             <div style={{ fontSize:11, fontWeight:700, color:"#64748b", textTransform:"uppercase", letterSpacing:".06em", marginBottom:4 }}>
               📈 {proj.short} Ticket Volume Trend — Last 12 Months
             </div>
-            <div style={{ fontSize:10, color:"#94a3b8", marginBottom:10 }}>
-              — Closed (CoreWeave dark blue)  · · · Total (light blue)
+            <div style={{ fontSize:10, color:"#94a3b8", marginBottom:10, display:"flex", gap:16, flexWrap:"wrap" }}>
+              <span style={{ display:"flex", alignItems:"center", gap:5 }}>
+                <svg width="24" height="10"><line x1="0" y1="5" x2="24" y2="5" stroke="#003366" strokeWidth="2.5"/></svg>
+                <span style={{ color:"#1e293b", fontWeight:600 }}>Closed</span>
+              </span>
+              <span style={{ display:"flex", alignItems:"center", gap:5 }}>
+                <svg width="24" height="10"><line x1="0" y1="5" x2="24" y2="5" stroke="#7eb6ff" strokeWidth="1.5" strokeDasharray="5,3"/></svg>
+                <span style={{ color:"#64748b" }}>Total</span>
+              </span>
+              <span style={{ display:"flex", alignItems:"center", gap:5 }}>
+                <svg width="24" height="10"><line x1="0" y1="5" x2="24" y2="5" stroke="#ef4444" strokeWidth="1.8" strokeDasharray="3,2"/></svg>
+                <span style={{ color:"#ef4444", fontWeight:600 }}>MTTR (hrs, right axis)</span>
+              </span>
             </div>
-            <div style={{ background:"#f8fafc", borderRadius:8, border:"1px solid #e2e8f0", padding:"12px 8px" }}>
+            <div style={{ background:"#f8fafc", borderRadius:8, border:"1px solid #e2e8f0", padding:"16px 8px 8px" }}>
               <TrendChart months={trends.months}/>
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))", gap:6, marginTop:10 }}>
