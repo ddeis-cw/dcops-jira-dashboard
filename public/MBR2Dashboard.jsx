@@ -55,15 +55,16 @@ function momArrow(pct, delta, prevBase, positiveIsGood = false) {
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
-function KPICard({ title, value, sub, color="#3b82f6", mom }) {
-  const C = color;
+function KPICard({ title, value, sub, mom }) {
   const arrow = mom != null ? momArrow(mom, null, 999, title.includes("Close")) : null;
   return (
-    <div style={{ background:"#ffffff", borderRadius:10, padding:"16px 18px", border:"1px solid #e2e8f0" }}>
-      <div style={{ fontSize:10, color:"#64748b", textTransform:"uppercase", letterSpacing:".06em", marginBottom:6 }}>{title}</div>
-      <div style={{ fontSize:28, fontWeight:700, color:C, marginBottom:4 }}>{value}</div>
-      {sub  && <div style={{ fontSize:10, color:"#94a3b8" }}>{sub}</div>}
-      {arrow && <div style={{ fontSize:11, color:arrow.color, marginTop:4, fontWeight:600 }}>{arrow.icon} vs prev month</div>}
+    <div style={{ background:"#003366", borderRadius:12, padding:"16px 18px",
+      border:"1px solid #002244", boxShadow:"0 2px 8px rgba(0,51,102,0.15)" }}>
+      <div style={{ fontSize:9, color:"#93c5fd", textTransform:"uppercase", letterSpacing:".08em", fontWeight:600, marginBottom:8 }}>{title}</div>
+      <div style={{ fontSize:28, fontWeight:800, color:"#ffffff", marginBottom:4 }}>{value}</div>
+      {sub   && <div style={{ fontSize:10, color:"#bfdbfe" }}>{sub}</div>}
+      {arrow && <div style={{ fontSize:11, color:arrow.color==="#22c55e"?"#4ade80":arrow.color==="#ef4444"?"#f87171":"#93c5fd",
+        marginTop:4, fontWeight:600 }}>{arrow.icon} vs prev month</div>}
     </div>
   );
 }
@@ -270,19 +271,19 @@ export default function MBR2Dashboard() {
 
         {/* KPI Row */}
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))", gap:10, marginBottom:20 }}>
-          <KPICard title="Total Tickets"   value={summary.total.toLocaleString()} color="#94a3b8" mom={momTotal}
+          <KPICard title="Total Tickets"   value={summary.total.toLocaleString()} mom={momTotal}
             sub={`${selMonth.short}`}/>
-          <KPICard title="Closed + Verif"  value={summary.closed.toLocaleString()} color="#22c55e" mom={momClosed}
+          <KPICard title="Closed + Verif"  value={summary.closed.toLocaleString()} mom={momClosed}
             sub={`${summary.closeRate}% close rate`}/>
-          <KPICard title="In Verification" value={summary.verif.toLocaleString()} color="#7dd3fc"
+          <KPICard title="In Verification" value={summary.verif.toLocaleString()}
             sub="awaiting sign-off"/>
-          <KPICard title="On Hold"         value={summary.onHold.toLocaleString()} color="#f59e0b"
+          <KPICard title="On Hold"         value={summary.onHold.toLocaleString()}
             sub="blocked tickets"/>
-          <KPICard title="In Progress"     value={summary.inProg.toLocaleString()} color="#6366f1"
+          <KPICard title="In Progress"     value={summary.inProg.toLocaleString()}
             sub="actively worked"/>
-          <KPICard title="Avg MTTR"        value={fmtHours(summary.mttrHours)} color="#3b82f6"
+          <KPICard title="Avg MTTR"        value={fmtHours(summary.mttrHours)}
             sub="closed tickets only"/>
-          <KPICard title="Avg Time Open"   value={summary.avgOpenDays != null ? `${summary.avgOpenDays}d` : "—"} color="#e879f9"
+          <KPICard title="Avg Time Open"   value={summary.avgOpenDays != null ? `${summary.avgOpenDays}d` : "—"}
             sub="open tickets"/>
         </div>
 
