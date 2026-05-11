@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const PROJECTS = [
+  { key:"all", label:"All Projects",             short:"ALL", color:"#e2e8f0" },
   { key:"do",  label:"DCT-Ops",              short:"DO",  color:"#3b82f6" },
   { key:"sda", label:"Service Desk Albatross",short:"SDA", color:"#22c55e" },
   { key:"sde", label:"Service Desk Eagle",    short:"SDE", color:"#10b981" },
@@ -158,7 +159,7 @@ function HeadlineCard({ rank, site, curr, prev, mom_pct, mom_delta }) {
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function MBR2Dashboard() {
   const [selMonth,   setSelMonth]   = useState(MONTHS[1]);
-  const [selProject, setSelProject] = useState("do");
+  const [selProject, setSelProject] = useState("all");
   const [loading,    setLoading]    = useState(false);
   const [error,      setError]      = useState("");
   const [summary,    setSummary]    = useState(null);
@@ -359,7 +360,7 @@ export default function MBR2Dashboard() {
         <div style={{ borderTop:"1px solid #1e293b", paddingTop:16 }}>
           <div style={{ fontSize:11, color:"#64748b", marginBottom:8, fontWeight:600 }}>Also view: other projects</div>
           <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-            {PROJECTS.filter(p=>p.key!==selProject).map(p => (
+            {PROJECTS.filter(p=>p.key!==selProject && p.key!=="all").map(p => (
               <button key={p.key} onClick={()=>setSelProject(p.key)}
                 style={{ padding:"4px 12px", fontSize:11, fontWeight:600, borderRadius:6, border:`1px solid ${p.color}44`, background:`${p.color}11`, color:p.color, cursor:"pointer" }}>
                 {p.short}
