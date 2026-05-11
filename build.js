@@ -61,8 +61,9 @@ const shared = {
 };
 
 Promise.all([
-  esbuild.build({ ...shared, entryPoints: ['public/DCOPSJiraDashboard.jsx'], outfile: 'public/bundle.js',     globalName: 'DCOPSApp', plugins: [cdnPlugin] }),
-  esbuild.build({ ...shared, entryPoints: ['public/MBRDashboard.jsx'],       outfile: 'public/mbr-bundle.js', globalName: 'MBRApp',   plugins: [mbrPlugin] }),
+  esbuild.build({ ...shared, entryPoints: ['public/DCOPSJiraDashboard.jsx'], outfile: 'public/bundle.js',      globalName: 'DCOPSApp',  plugins: [cdnPlugin] }),
+  esbuild.build({ ...shared, entryPoints: ['public/MBRDashboard.jsx'],       outfile: 'public/mbr-bundle.js',  globalName: 'MBRApp',    plugins: [mbrPlugin] }),
+  esbuild.build({ ...shared, entryPoints: ['public/MBR2Dashboard.jsx'],      outfile: 'public/mbr2-bundle.js', globalName: 'MBR2App',   plugins: [mbrPlugin] }),
 ]).then(() => {
   const main = fs.statSync('public/bundle.js').size;
   const mbr  = fs.statSync('public/mbr-bundle.js').size;

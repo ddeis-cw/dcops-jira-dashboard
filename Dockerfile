@@ -22,6 +22,7 @@ COPY --from=deps /app/node_modules ./node_modules
 # Copy built frontend bundles
 COPY --from=deps /app/public/bundle.js     ./public/bundle.js
 COPY --from=deps /app/public/mbr-bundle.js ./public/mbr-bundle.js
+COPY --from=deps /app/public/mbr2-bundle.js ./public/mbr2-bundle.js
 COPY package*.json ./
 COPY src/           ./src/
 COPY migrations/    ./migrations/

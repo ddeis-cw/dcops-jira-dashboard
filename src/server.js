@@ -422,6 +422,173 @@ app.use('/rest', (req, res) => {
   req.pipe(proxy, { end: true });
 });
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+// Normalize a raw location string to a 6-char site code
+// Handles US-HIO01/02/03 → US-HIO, US-WEST-07A → skip, etc.
+const CLOSED_STATUSES = `('Closed','Verification','Customer Verification','Done','Resolved','Completed','Cleaning Done','RMA')`;
+const OPEN_STATUSES   = `('In Progress','Awaiting Support','On Hold','Waiting','Pending','Escalated','Reopened','New','To Do')`;
+
+function normSite(raw) {
+  if (!raw) return null;
+  // Strip trailing 2-digit suffix: US-HIO01 → US-HIO, US-DTN01 → US-DTN
+  const stripped = raw.replace(/\d{2}(-.*)?$/, '').trim();
+  return stripped || null;
+}
+
+// ── API: MBR2 — summary KPIs ─────────────────────────────────────────────────
+app.get('/api/mbr2/summary', (req, res) => {
+  const { from, to, project = 'do' } = req.query;
+  if (!from || !to) return res.status(400).json({ error: 'from and to required' });
+  const proj = project.toLowerCase();
+  try {
+    const base = `FROM tickets WHERE project=? AND SUBSTR(created_at,1,10) >= ? AND SUBSTR(created_at,1,10) <= ?`;
+    const args = [proj, from, to];
+
+    const total    = db.prepare(`SELECT COUNT(*) n ${base}`).get(...args).n;
+    const closed   = db.prepare(`SELECT COUNT(*) n ${base} AND status IN ${CLOSED_STATUSES}`).get(...args).n;
+    const onHold   = db.prepare(`SELECT COUNT(*) n ${base} AND status = 'On Hold'`).get(...args).n;
+    const inProg   = db.prepare(`SELECT COUNT(*) n ${base} AND status = 'In Progress'`).get(...args).n;
+    const verif    = db.prepare(`SELECT COUNT(*) n ${base} AND status IN ('Verification','Customer Verification')`).get(...args).n;
+
+    // MTTR: avg hours from created_at to resolved_at for closed tickets
+    const mttr = db.prepare(`
+      SELECT AVG(CAST((julianday(SUBSTR(resolved_at,1,19)) - julianday(SUBSTR(created_at,1,19))) * 24 AS REAL)) avg_hours
+      FROM tickets
+      WHERE project=? AND SUBSTR(created_at,1,10) >= ? AND SUBSTR(created_at,1,10) <= ?
+        AND resolved_at IS NOT NULL AND resolved_at != ''
+        AND status IN ${CLOSED_STATUSES}
+    `).get(...args);
+
+    // Avg time in progress (created → now for still-open tickets)
+    const avgOpen = db.prepare(`
+      SELECT AVG(CAST((julianday('now') - julianday(SUBSTR(created_at,1,10))) AS REAL)) avg_days
+      FROM tickets
+      WHERE project=? AND SUBSTR(created_at,1,10) >= ? AND SUBSTR(created_at,1,10) <= ?
+        AND status NOT IN ${CLOSED_STATUSES}
+    `).get(...args);
+
+    res.json({
+      total, closed, onHold, inProg, verif,
+      closeRate: total > 0 ? Math.round(closed / total * 100) : 0,
+      mttrHours: mttr?.avg_hours ? Math.round(mttr.avg_hours * 10) / 10 : null,
+      avgOpenDays: avgOpen?.avg_days ? Math.round(avgOpen.avg_days * 10) / 10 : null,
+      from, to, project: proj,
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── API: MBR2 — site breakdown with MoM ──────────────────────────────────────
+app.get('/api/mbr2/sites', (req, res) => {
+  const { from, to, prev_from, prev_to, project = 'do' } = req.query;
+  if (!from || !to) return res.status(400).json({ error: 'from and to required' });
+  const proj = project.toLowerCase();
+  try {
+    const siteData = (f, t) => {
+      const rows = db.prepare(`
+        SELECT
+          CASE
+            WHEN location GLOB '*[0-9][0-9]' THEN SUBSTR(location, 1, LENGTH(location)-2)
+            ELSE COALESCE(location, e.site)
+          END AS site,
+          COUNT(*) AS total,
+          SUM(CASE WHEN status IN ${CLOSED_STATUSES} THEN 1 ELSE 0 END) AS closed,
+          SUM(CASE WHEN status = 'On Hold' THEN 1 ELSE 0 END) AS on_hold,
+          SUM(CASE WHEN status NOT IN ${CLOSED_STATUSES} THEN 1 ELSE 0 END) AS open,
+          AVG(CASE WHEN status IN ${CLOSED_STATUSES} AND resolved_at IS NOT NULL
+            THEN CAST((julianday(SUBSTR(resolved_at,1,19)) - julianday(SUBSTR(created_at,1,19))) * 24 AS REAL)
+            ELSE NULL END) AS avg_mttr_hours
+        FROM tickets t
+        LEFT JOIN employees e ON t.assignee = e.name
+        WHERE t.project = ?
+          AND SUBSTR(t.created_at,1,10) >= ?
+          AND SUBSTR(t.created_at,1,10) <= ?
+          AND (t.location IS NOT NULL AND t.location != '' OR e.site IS NOT NULL)
+        GROUP BY site
+        HAVING site IS NOT NULL
+        ORDER BY closed DESC
+      `).all(proj, f, t);
+      const map = {};
+      rows.forEach(r => { if (r.site) map[r.site] = r; });
+      return map;
+    };
+
+    const curr = siteData(from, to);
+    const prev = prev_from && prev_to ? siteData(prev_from, prev_to) : {};
+
+    // Build combined list
+    const allSites = [...new Set([...Object.keys(curr), ...Object.keys(prev)])];
+    const sites = allSites.map(site => {
+      const c = curr[site] || { total:0, closed:0, on_hold:0, open:0, avg_mttr_hours:null };
+      const p = prev[site] || { total:0, closed:0 };
+      const momPct = p.closed > 0 ? Math.round((c.closed - p.closed) / p.closed * 100) : null;
+      return {
+        site,
+        curr: { total: c.total, closed: c.closed, on_hold: c.on_hold, open: c.open, mttr: c.avg_mttr_hours ? Math.round(c.avg_mttr_hours * 10)/10 : null },
+        prev: { total: p.total, closed: p.closed },
+        mom_pct: momPct,
+        mom_delta: c.closed - p.closed,
+      };
+    }).sort((a,b) => b.curr.closed - a.curr.closed);
+
+    res.json({ sites, total: sites.length, from, to });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── API: MBR2 — monthly trends (last N months) ───────────────────────────────
+app.get('/api/mbr2/trends', (req, res) => {
+  const { months = 6, project = 'do' } = req.query;
+  const proj = project.toLowerCase();
+  const n = Math.min(parseInt(months) || 6, 18);
+  try {
+    const rows = db.prepare(`
+      SELECT
+        SUBSTR(created_at, 1, 7) AS month,
+        COUNT(*) AS total,
+        SUM(CASE WHEN status IN ${CLOSED_STATUSES} THEN 1 ELSE 0 END) AS closed,
+        SUM(CASE WHEN status = 'On Hold' THEN 1 ELSE 0 END) AS on_hold,
+        SUM(CASE WHEN status NOT IN ${CLOSED_STATUSES} THEN 1 ELSE 0 END) AS open,
+        AVG(CASE WHEN status IN ${CLOSED_STATUSES} AND resolved_at IS NOT NULL
+          THEN CAST((julianday(SUBSTR(resolved_at,1,19)) - julianday(SUBSTR(created_at,1,19)))*24 AS REAL)
+          ELSE NULL END) AS avg_mttr_hours
+      FROM tickets
+      WHERE project = ?
+        AND SUBSTR(created_at,1,10) >= date('now', ?)
+      GROUP BY month
+      ORDER BY month ASC
+    `).all(proj, `-${n} months`);
+    res.json({ months: rows, project: proj });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── API: MBR2 — status time breakdown ────────────────────────────────────────
+app.get('/api/mbr2/status-time', (req, res) => {
+  const { from, to, project = 'do' } = req.query;
+  if (!from || !to) return res.status(400).json({ error: 'from and to required' });
+  const proj = project.toLowerCase();
+  try {
+    // Use sla_seconds for SLA tickets, fall back to wall-clock
+    const rows = db.prepare(`
+      SELECT
+        status,
+        COUNT(*) AS n,
+        AVG(CASE
+          WHEN sla_seconds IS NOT NULL THEN sla_seconds / 3600.0
+          WHEN resolved_at IS NOT NULL THEN CAST((julianday(SUBSTR(resolved_at,1,19)) - julianday(SUBSTR(created_at,1,19)))*24 AS REAL)
+          ELSE CAST((julianday('now') - julianday(SUBSTR(created_at,1,10)))*24 AS REAL)
+        END) AS avg_hours
+      FROM tickets
+      WHERE project=? AND SUBSTR(created_at,1,10) >= ? AND SUBSTR(created_at,1,10) <= ?
+      GROUP BY status
+      ORDER BY n DESC
+    `).all(proj, from, to);
+    res.json({ statuses: rows, from, to });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/mbr2', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'mbr2.html'));
+});
+
 app.get('/mbr', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'mbr.html'));
 });
