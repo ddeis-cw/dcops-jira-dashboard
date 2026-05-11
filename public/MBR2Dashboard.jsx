@@ -1,4 +1,50 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+
+// ── Export utility (html2canvas) ─────────────────────────────────────────────
+function loadH2C() {
+  return new Promise((res, rej) => {
+    if (window.html2canvas) { res(window.html2canvas); return; }
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+    s.onload  = () => res(window.html2canvas);
+    s.onerror = () => rej(new Error("Failed to load html2canvas"));
+    document.head.appendChild(s);
+  });
+}
+
+function ExportBtn({ targetRef, label }) {
+  const [st, setSt] = useState("idle");
+  const go = async () => {
+    if (!targetRef.current || st === "loading") return;
+    setSt("loading");
+    try {
+      const h2c = await loadH2C();
+      const btn = targetRef.current.querySelector("[data-export-btn]");
+      if (btn) btn.style.visibility = "hidden";
+      const canvas = await h2c(targetRef.current, {
+        backgroundColor: "#ffffff", scale: 2, useCORS: true, logging: false,
+      });
+      if (btn) btn.style.visibility = "visible";
+      const slug = label.replace(/[^a-z0-9]+/gi,"_").replace(/^_|_$/g,"").toLowerCase();
+      const a = document.createElement("a");
+      a.download = `mbr2_${slug}.png`;
+      a.href = canvas.toDataURL("image/png");
+      a.click();
+      setSt("done"); setTimeout(()=>setSt("idle"),2500);
+    } catch(e) { setSt("error"); setTimeout(()=>setSt("idle"),2500); }
+  };
+  const bg  = st==="done"?"#15803d":st==="error"?"#b91c1c":"rgba(255,255,255,.15)";
+  const lbl = st==="loading"?"⏳ Exporting…":st==="done"?"✓ Saved PNG":st==="error"?"⚠ Failed":"⬇ PNG";
+  return (
+    <button data-export-btn onClick={go} disabled={st==="loading"}
+      style={{ position:"absolute", top:10, right:10, background:bg,
+        border:"1px solid rgba(255,255,255,.3)", borderRadius:6, padding:"4px 10px",
+        cursor:st==="loading"?"wait":"pointer", fontSize:10, fontWeight:600,
+        color:"#fff", zIndex:10, transition:"all .2s" }}>
+      {lbl}
+    </button>
+  );
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const PROJECTS = [
@@ -245,6 +291,15 @@ export default function MBR2Dashboard() {
   const [trends,     setTrends]     = useState(null);
   const [statusTime, setStatusTime] = useState(null);
   const [prevSummary,setPrevSummary]= useState(null);
+  const [projData,   setProjData]   = useState(null);
+
+  // Section refs for PNG export
+  const refKPIs     = useRef(null);
+  const refTop5     = useRef(null);
+  const refTrend    = useRef(null);
+  const refProjects = useRef(null);
+  const refSites    = useRef(null);
+  const refStatus   = useRef(null);
 
   const prev = prevMonth(selMonth);
   const proj = PROJECTS.find(p => p.key === selProject) || PROJECTS[0];
@@ -255,21 +310,23 @@ export default function MBR2Dashboard() {
       const qs = `from=${selMonth.from}&to=${selMonth.to}&project=${selProject}`;
       const prevQs = prev ? `from=${prev.from}&to=${prev.to}&project=${selProject}` : null;
 
-      const [sumRes, siteRes, trendRes, stRes] = await Promise.all([
+      const [sumRes, siteRes, trendRes, stRes, projRes] = await Promise.all([
         fetch(`/api/mbr2/summary?${qs}`),
         fetch(`/api/mbr2/sites?${qs}${prev ? `&prev_from=${prev.from}&prev_to=${prev.to}` : ""}`),
         fetch(`/api/mbr2/trends?months=12&project=${selProject}`),
         fetch(`/api/mbr2/status-time?${qs}`),
+        fetch(`/api/mbr2/projects?from=${selMonth.from}&to=${selMonth.to}`),
       ]);
 
-      const [sum, site, trend, st] = await Promise.all([
-        sumRes.json(), siteRes.json(), trendRes.json(), stRes.json()
+      const [sum, site, trend, st, proj] = await Promise.all([
+        sumRes.json(), siteRes.json(), trendRes.json(), stRes.json(), projRes.json()
       ]);
 
       setSummary(sum);
       setSites(site);
       setTrends(trend);
       setStatusTime(st);
+      setProjData(proj);
 
       if (prevQs) {
         const ps = await fetch(`/api/mbr2/summary?${prevQs}`);
@@ -328,7 +385,8 @@ export default function MBR2Dashboard() {
       {!loading && summary && (<>
 
         {/* KPI Row */}
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))", gap:10, marginBottom:20 }}>
+        <div ref={refKPIs} style={{ position:"relative", display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))", gap:10, marginBottom:20, padding:"4px" }}>
+          <ExportBtn targetRef={refKPIs} label="kpi_overview"/>
           <KPICard title="Total Tickets"   value={summary.total.toLocaleString()} mom={momTotal}
             sub={`${selMonth.short}`}/>
           <KPICard title="Closed + Verif"  value={summary.closed.toLocaleString()} mom={momClosed}
@@ -347,7 +405,8 @@ export default function MBR2Dashboard() {
 
         {/* Top 5 Headlines */}
         {top5.length > 0 && (
-          <div style={{ marginBottom:20 }}>
+          <div ref={refTop5} style={{ marginBottom:20, position:"relative", padding:"4px" }}>
+            <ExportBtn targetRef={refTop5} label="top5_sites"/>
             <div style={{ fontSize:11, fontWeight:700, color:"#64748b", textTransform:"uppercase", letterSpacing:".06em", marginBottom:10 }}>
               🏆 Top 5 Sites — {selMonth.short} · vs {prev?.short || "prev"}
             </div>
@@ -359,7 +418,8 @@ export default function MBR2Dashboard() {
 
         {/* Volume Trend */}
         {trends?.months?.length > 0 && (
-          <div style={{ background:"#ffffff", borderRadius:10, padding:"16px", border:"1px solid #e2e8f0", marginBottom:20 }}>
+          <div ref={refTrend} style={{ background:"#ffffff", borderRadius:10, padding:"16px", border:"1px solid #e2e8f0", marginBottom:20, position:"relative" }}>
+            <ExportBtn targetRef={refTrend} label="ticket_trend"/>
             <div style={{ fontSize:11, fontWeight:700, color:"#64748b", textTransform:"uppercase", letterSpacing:".06em", marginBottom:4 }}>
               📈 {proj.short} Ticket Volume Trend — Last 12 Months
             </div>
@@ -399,7 +459,8 @@ export default function MBR2Dashboard() {
 
         {/* Full Site Table */}
         {sites?.sites?.length > 0 && (
-          <div style={{ background:"#ffffff", borderRadius:10, border:"1px solid #e2e8f0", marginBottom:20 }}>
+          <div ref={refSites} style={{ background:"#ffffff", borderRadius:10, border:"1px solid #e2e8f0", marginBottom:20, position:"relative" }}>
+            <ExportBtn targetRef={refSites} label="all_sites"/>
             <div style={{ padding:"12px 16px", borderBottom:"1px solid #e2e8f0", fontSize:11, fontWeight:700, color:"#64748b", textTransform:"uppercase", letterSpacing:".06em" }}>
               📍 All Sites — {selMonth.short} vs {prev?.short || "prev month"}
               <span style={{ marginLeft:8, fontWeight:400, color:"#94a3b8" }}>{sites.sites.length} sites</span>
@@ -425,7 +486,8 @@ export default function MBR2Dashboard() {
 
         {/* Status Time Breakdown */}
         {statusTime?.statuses?.length > 0 && (
-          <div style={{ background:"#ffffff", borderRadius:10, border:"1px solid #e2e8f0", padding:"16px", marginBottom:20 }}>
+          <div ref={refStatus} style={{ background:"#ffffff", borderRadius:10, border:"1px solid #e2e8f0", padding:"16px", marginBottom:20, position:"relative" }}>
+            <ExportBtn targetRef={refStatus} label="status_time"/>
             <div style={{ fontSize:11, fontWeight:700, color:"#64748b", textTransform:"uppercase", letterSpacing:".06em", marginBottom:12 }}>
               ⏱ Average Time in Each Status — {selMonth.short}
             </div>
@@ -441,6 +503,71 @@ export default function MBR2Dashboard() {
                   </div>
                 );
               })}
+            </div>
+          </div>
+        )}
+
+        {/* Project Breakdown */}
+        {projData?.projects?.length > 0 && (
+          <div ref={refProjects} style={{ background:"#003366", borderRadius:12, border:"1px solid #002244",
+            boxShadow:"0 2px 8px rgba(0,51,102,0.15)", marginBottom:20, overflow:"hidden", position:"relative" }}>
+            <ExportBtn targetRef={refProjects} label="ticket_volume_by_project"/>
+            <div style={{ padding:"16px 18px 12px", borderBottom:"1px solid rgba(255,255,255,.12)" }}>
+              <div style={{ fontSize:11, fontWeight:700, color:"#93c5fd", textTransform:"uppercase", letterSpacing:".08em" }}>
+                Ticket Volume · By Jira Project
+              </div>
+              <div style={{ fontSize:10, color:"#bfdbfe", marginTop:2 }}>{selMonth.label}</div>
+            </div>
+            <div style={{ overflowX:"auto" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                <thead>
+                  <tr style={{ background:"rgba(0,0,0,.2)" }}>
+                    {["Project","Label","Total Tickets","Closed","Close %","MTTR"].map(h=>(
+                      <th key={h} style={{ padding:"10px 14px", textAlign:h==="Total Tickets"||h==="Closed"||h==="Close %"||h==="MTTR"?"center":"left",
+                        color:"#93c5fd", fontSize:9, fontWeight:700, whiteSpace:"nowrap",
+                        textTransform:"uppercase", letterSpacing:".06em" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {projData.projects.map((p,i) => {
+                    const rateCol = p.close_pct>=90?"#4ade80":p.close_pct>=70?"#fde68a":"#f87171";
+                    return (
+                      <tr key={p.key} style={{ borderBottom:"1px solid rgba(255,255,255,.08)",
+                        background:i%2===0?"rgba(255,255,255,.04)":"rgba(255,255,255,.02)" }}>
+                        <td style={{ padding:"10px 14px", fontFamily:"monospace", fontSize:11, color:"#7eb6ff", fontWeight:700 }}>{p.key.toUpperCase()}</td>
+                        <td style={{ padding:"10px 14px", fontWeight:600, color:"#ffffff" }}>{p.label}</td>
+                        <td style={{ padding:"10px 14px", textAlign:"center", color:"#e2e8f0" }}>{p.total.toLocaleString()}</td>
+                        <td style={{ padding:"10px 14px", textAlign:"center" }}>
+                          <span style={{ color:"#4ade80", fontWeight:700 }}>{p.closed.toLocaleString()}</span>
+                        </td>
+                        <td style={{ padding:"10px 14px", textAlign:"center" }}>
+                          <div style={{ display:"flex", alignItems:"center", gap:8, justifyContent:"center" }}>
+                            <div style={{ width:60, background:"rgba(255,255,255,.1)", borderRadius:3, height:5 }}>
+                              <div style={{ height:"100%", borderRadius:3, background:rateCol, width:`${p.close_pct}%` }}/>
+                            </div>
+                            <span style={{ color:rateCol, fontWeight:700, minWidth:30 }}>{p.close_pct}%</span>
+                          </div>
+                        </td>
+                        <td style={{ padding:"10px 14px", textAlign:"center", color:"#7dd3fc" }}>
+                          {p.mttr ? `${p.mttr.toFixed(1)}h` : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  <tr style={{ borderTop:"2px solid rgba(255,255,255,.2)", background:"rgba(0,0,0,.2)", fontWeight:700 }}>
+                    <td colSpan={2} style={{ padding:"10px 14px", color:"#ffffff", fontSize:11 }}>TOTAL — ALL PROJECTS</td>
+                    <td style={{ padding:"10px 14px", textAlign:"center", color:"#e2e8f0" }}>{projData.totals.total.toLocaleString()}</td>
+                    <td style={{ padding:"10px 14px", textAlign:"center", color:"#4ade80" }}>{projData.totals.closed.toLocaleString()}</td>
+                    <td style={{ padding:"10px 14px", textAlign:"center" }}>
+                      <span style={{ color:projData.totals.close_pct>=90?"#4ade80":projData.totals.close_pct>=70?"#fde68a":"#f87171", fontWeight:700 }}>
+                        {projData.totals.close_pct}%
+                      </span>
+                    </td>
+                    <td style={{ padding:"10px 14px", textAlign:"center", color:"#64748b" }}>—</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
         )}

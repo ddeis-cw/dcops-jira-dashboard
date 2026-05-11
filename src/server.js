@@ -555,6 +555,48 @@ app.get('/api/mbr2/sites', (req, res) => {
 });
 
 // ── API: MBR2 — monthly trends (last N months) ───────────────────────────────
+// ── API: MBR2 — per-project breakdown ────────────────────────────────────────
+app.get('/api/mbr2/projects', (req, res) => {
+  const { from, to } = req.query;
+  if (!from || !to) return res.status(400).json({ error: 'from and to required' });
+  const PROJ_LABELS = {
+    do:'DCT-Ops', sda:'Albatross', sde:'Eagle', sdh:'Heron',
+    sdo:'Osprey', sdp:'Phoenix', sds:'Snipe Customer'
+  };
+  try {
+    const rows = db.prepare(`
+      SELECT project,
+        COUNT(*) AS total,
+        SUM(CASE WHEN status IN ${CLOSED_STATUSES} THEN 1 ELSE 0 END) AS closed,
+        AVG(CASE WHEN status IN ${CLOSED_STATUSES} AND resolved_at IS NOT NULL
+          THEN CAST((julianday(SUBSTR(resolved_at,1,19)) - julianday(SUBSTR(created_at,1,19)))*24 AS REAL)
+          ELSE NULL END) AS avg_mttr_hours
+      FROM tickets
+      WHERE SUBSTR(created_at,1,10) >= ? AND SUBSTR(created_at,1,10) <= ?
+      GROUP BY project
+      ORDER BY closed DESC
+    `).all(from, to);
+
+    const projects = rows.map(r => ({
+      key:   r.project,
+      label: PROJ_LABELS[r.project] || r.project,
+      total: r.total,
+      closed: r.closed,
+      open:   r.total - r.closed,
+      close_pct: r.total > 0 ? Math.round(r.closed/r.total*100) : 0,
+      mttr: r.avg_mttr_hours ? Math.round(r.avg_mttr_hours*10)/10 : null,
+    }));
+
+    const totals = {
+      total:  projects.reduce((s,p)=>s+p.total,0),
+      closed: projects.reduce((s,p)=>s+p.closed,0),
+    };
+    totals.close_pct = totals.total > 0 ? Math.round(totals.closed/totals.total*100) : 0;
+
+    res.json({ projects, totals, from, to });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/mbr2/trends', (req, res) => {
   const { months = 6, project = 'do' } = req.query;
   const isAll = project === 'all';
