@@ -42,17 +42,28 @@ function fmtHours(h) {
   return `${(h/24).toFixed(1)}d`;
 }
 
-function momArrow(pct, positiveIsGood = false) {
-  if (pct === null) return { icon:"—", color:"#64748b" };
+function momArrow(pct, delta, prevBase, positiveIsGood = false) {
+  // Suppress % if prior period base is too small to be meaningful
+  if (pct === null || prevBase < 5) {
+    if (delta != null && delta !== 0) {
+      const up = delta > 0;
+      const good = positiveIsGood ? up : !up;
+      return { icon: `${up?"+":""}${delta} tickets`, color: good ? "#22c55e" : "#ef4444" };
+    }
+    return { icon:"—", color:"#64748b" };
+  }
+  // Cap display at ±999%
+  const capped = Math.max(-999, Math.min(999, pct));
   const up = pct > 0;
   const good = positiveIsGood ? up : !up;
-  return { icon: up ? `▲ +${pct}%` : `▼ ${pct}%`, color: good ? "#22c55e" : "#ef4444" };
+  const suffix = Math.abs(pct) > 999 ? "%" : "%";
+  return { icon: up ? `▲ +${capped}${suffix}` : `▼ ${capped}${suffix}`, color: good ? "#22c55e" : "#ef4444" };
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 function KPICard({ title, value, sub, color="#3b82f6", mom }) {
   const C = color;
-  const arrow = mom != null ? momArrow(mom, title.includes("Close")) : null;
+  const arrow = mom != null ? momArrow(mom, null, 999, title.includes("Close")) : null;
   return (
     <div style={{ background:"#1e293b", borderRadius:10, padding:"16px 18px", border:"1px solid #334155" }}>
       <div style={{ fontSize:10, color:"#64748b", textTransform:"uppercase", letterSpacing:".06em", marginBottom:6 }}>{title}</div>
@@ -64,7 +75,7 @@ function KPICard({ title, value, sub, color="#3b82f6", mom }) {
 }
 
 function SiteRow({ site, curr, prev, mom_pct, mom_delta, rank }) {
-  const arr = momArrow(mom_pct, true);
+  const arr = momArrow(mom_pct, mom_delta, prev.closed, true);
   const closeRate = curr.total > 0 ? Math.round(curr.closed/curr.total*100) : 0;
   const rateCol = closeRate >= 90 ? "#22c55e" : closeRate >= 70 ? "#f59e0b" : "#ef4444";
   return (
@@ -123,7 +134,7 @@ function TrendChart({ months, color="#3b82f6" }) {
 }
 
 function HeadlineCard({ rank, site, curr, prev, mom_pct, mom_delta }) {
-  const arr = momArrow(mom_pct, true);
+  const arr = momArrow(mom_pct, mom_delta, prev.closed, true);
   const isUp = mom_pct != null && mom_pct > 0;
   return (
     <div style={{ background:"#1e293b", borderRadius:10, padding:"14px 16px", border:`1px solid ${isUp ? "#22c55e44" : mom_pct < 0 ? "#ef444444" : "#334155"}` }}>
