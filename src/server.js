@@ -175,7 +175,7 @@ app.get('/api/tickets/by-site-project', (req, res) => {
         t.project,
         COUNT(*) AS n
       FROM tickets t
-      LEFT JOIN employees e ON t.assignee = e.name
+      LEFT JOIN (SELECT name, MIN(site) AS site FROM employees GROUP BY name) e ON t.assignee = e.name
       ${where}
       GROUP BY site, t.project
       ORDER BY n DESC
@@ -216,7 +216,7 @@ app.get('/api/tickets/open', (req, res) => {
         AVG(CAST((julianday('now') - julianday(SUBSTR(t.created_at,1,10))) AS REAL)) AS avg_age_days,
         MAX(CAST((julianday('now') - julianday(SUBSTR(t.created_at,1,10))) AS REAL)) AS max_age_days
       FROM tickets t
-      LEFT JOIN employees e ON t.assignee = e.name
+      LEFT JOIN (SELECT name, MIN(site) AS site FROM employees GROUP BY name) e ON t.assignee = e.name
       WHERE LOWER(t.status) NOT IN ('closed','done','resolved','completed','cancelled','canceled')
         AND t.status IS NOT NULL AND t.status != ''
       GROUP BY site, t.status
@@ -288,7 +288,7 @@ app.get('/api/trends', (req, res) => {
         strftime(?, SUBSTR(t.created_at,1,19)) AS bucket,
         COUNT(*) AS n
       FROM tickets t
-      LEFT JOIN employees e ON t.assignee = e.name
+      LEFT JOIN (SELECT name, MIN(site) AS site FROM employees GROUP BY name) e ON t.assignee = e.name
       WHERE t.created_at >= ?
         AND (t.location IS NOT NULL AND t.location != '' OR e.site IS NOT NULL)
       GROUP BY site, t.project, bucket
@@ -499,7 +499,7 @@ app.get('/api/mbr2/sites', (req, res) => {
         THEN CAST((julianday(SUBSTR(t.resolved_at,1,19)) - julianday(SUBSTR(t.created_at,1,19))) * 24 AS REAL)
         ELSE NULL END) AS avg_mttr_hours
     FROM tickets t
-    LEFT JOIN employees e ON t.assignee = e.name
+    LEFT JOIN (SELECT name, MIN(site) AS site FROM employees GROUP BY name) e ON t.assignee = e.name
     WHERE SUBSTR(t.created_at,1,10) >= '${f}'
       AND SUBSTR(t.created_at,1,10) <= '${t}'
       ` + projClause + `
