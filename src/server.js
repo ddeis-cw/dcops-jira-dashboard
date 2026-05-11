@@ -484,8 +484,8 @@ app.get('/api/mbr2/sites', (req, res) => {
   const isAll = project === 'all';
   const proj  = project.toLowerCase();
   const projClause = isAll ? '' : `AND t.project = '${proj}'`;
-  // Build SQL with projClause baked in — prepare once, call twice
-  const siteSql = `
+  // Build site query — bake all values into SQL to avoid parameterized binding issues
+  const makeSiteSql = (f, t) => `
     SELECT
       CASE
         WHEN t.location GLOB '*[0-9][0-9]' THEN SUBSTR(t.location, 1, LENGTH(t.location)-2)
@@ -500,8 +500,8 @@ app.get('/api/mbr2/sites', (req, res) => {
         ELSE NULL END) AS avg_mttr_hours
     FROM tickets t
     LEFT JOIN employees e ON t.assignee = e.name
-    WHERE SUBSTR(t.created_at,1,10) >= ?
-      AND SUBSTR(t.created_at,1,10) <= ?
+    WHERE SUBSTR(t.created_at,1,10) >= '${f}'
+      AND SUBSTR(t.created_at,1,10) <= '${t}'
       ` + projClause + `
       AND (t.location IS NOT NULL AND t.location != '' OR e.site IS NOT NULL)
     GROUP BY site
@@ -515,12 +515,8 @@ app.get('/api/mbr2/sites', (req, res) => {
   };
 
   try {
-    // Prepare two separate statement objects to avoid better-sqlite3 caching issues
-    const currStmt = db.prepare(siteSql + ' /* curr */');
-    const prevStmt = db.prepare(siteSql + ' /* prev */');
-
-    const curr = toMap(currStmt.all(from, to));
-    const prev = prev_from && prev_to ? toMap(prevStmt.all(prev_from, prev_to)) : {};
+    const curr = toMap(db.prepare(makeSiteSql(from, to)).all());
+    const prev = prev_from && prev_to ? toMap(db.prepare(makeSiteSql(prev_from, prev_to)).all()) : {};
 
     // Build combined list
     const allSites = [...new Set([...Object.keys(curr), ...Object.keys(prev)])];
