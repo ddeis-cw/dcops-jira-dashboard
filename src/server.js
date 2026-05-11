@@ -484,38 +484,43 @@ app.get('/api/mbr2/sites', (req, res) => {
   const isAll = project === 'all';
   const proj  = project.toLowerCase();
   const projClause = isAll ? '' : `AND t.project = '${proj}'`;
-  try {
-    const siteData = (f, t) => {
-      const rows = db.prepare(`
-        SELECT
-          CASE
-            WHEN location GLOB '*[0-9][0-9]' THEN SUBSTR(location, 1, LENGTH(location)-2)
-            ELSE COALESCE(location, e.site)
-          END AS site,
-          COUNT(*) AS total,
-          SUM(CASE WHEN status IN ${CLOSED_STATUSES} THEN 1 ELSE 0 END) AS closed,
-          SUM(CASE WHEN status = 'On Hold' THEN 1 ELSE 0 END) AS on_hold,
-          SUM(CASE WHEN status NOT IN ${CLOSED_STATUSES} THEN 1 ELSE 0 END) AS open,
-          AVG(CASE WHEN status IN ${CLOSED_STATUSES} AND resolved_at IS NOT NULL
-            THEN CAST((julianday(SUBSTR(resolved_at,1,19)) - julianday(SUBSTR(created_at,1,19))) * 24 AS REAL)
-            ELSE NULL END) AS avg_mttr_hours
-        FROM tickets t
-        LEFT JOIN employees e ON t.assignee = e.name
-        WHERE SUBSTR(t.created_at,1,10) >= ?
-          AND SUBSTR(t.created_at,1,10) <= ?
-          ${projClause}
-          AND (t.location IS NOT NULL AND t.location != '' OR e.site IS NOT NULL)
-        GROUP BY site
-        HAVING site IS NOT NULL
-        ORDER BY closed DESC
-      `).all(f, t);
-      const map = {};
-      rows.forEach(r => { if (r.site) map[r.site] = r; });
-      return map;
-    };
+  // Build SQL with projClause baked in — prepare once, call twice
+  const siteSql = `
+    SELECT
+      CASE
+        WHEN t.location GLOB '*[0-9][0-9]' THEN SUBSTR(t.location, 1, LENGTH(t.location)-2)
+        ELSE COALESCE(t.location, e.site)
+      END AS site,
+      COUNT(*) AS total,
+      SUM(CASE WHEN t.status IN ${CLOSED_STATUSES} THEN 1 ELSE 0 END) AS closed,
+      SUM(CASE WHEN t.status = 'On Hold' THEN 1 ELSE 0 END) AS on_hold,
+      SUM(CASE WHEN t.status NOT IN ${CLOSED_STATUSES} THEN 1 ELSE 0 END) AS open,
+      AVG(CASE WHEN t.status IN ${CLOSED_STATUSES} AND t.resolved_at IS NOT NULL
+        THEN CAST((julianday(SUBSTR(t.resolved_at,1,19)) - julianday(SUBSTR(t.created_at,1,19))) * 24 AS REAL)
+        ELSE NULL END) AS avg_mttr_hours
+    FROM tickets t
+    LEFT JOIN employees e ON t.assignee = e.name
+    WHERE SUBSTR(t.created_at,1,10) >= ?
+      AND SUBSTR(t.created_at,1,10) <= ?
+      ` + projClause + `
+      AND (t.location IS NOT NULL AND t.location != '' OR e.site IS NOT NULL)
+    GROUP BY site
+    HAVING site IS NOT NULL
+    ORDER BY closed DESC`;
 
-    const curr = siteData(from, to);
-    const prev = prev_from && prev_to ? siteData(prev_from, prev_to) : {};
+  const toMap = rows => {
+    const map = {};
+    rows.forEach(r => { if (r.site) map[r.site] = r; });
+    return map;
+  };
+
+  try {
+    // Prepare two separate statement objects to avoid better-sqlite3 caching issues
+    const currStmt = db.prepare(siteSql + ' /* curr */');
+    const prevStmt = db.prepare(siteSql + ' /* prev */');
+
+    const curr = toMap(currStmt.all(from, to));
+    const prev = prev_from && prev_to ? toMap(prevStmt.all(prev_from, prev_to)) : {};
 
     // Build combined list
     const allSites = [...new Set([...Object.keys(curr), ...Object.keys(prev)])];
