@@ -38,8 +38,7 @@ function prevMonth(m) {
 
 function fmtHours(h) {
   if (h == null) return "—";
-  if (h < 24)  return `${h.toFixed(1)}h`;
-  return `${(h/24).toFixed(1)}d`;
+  return `${h.toFixed(1)}h`;
 }
 
 function momArrow(pct, delta, prevBase, positiveIsGood = false) {
@@ -98,9 +97,12 @@ function SiteRow({ site, curr, prev, mom_pct, mom_delta, rank }) {
   );
 }
 
-function TrendChart({ months, color="#3b82f6" }) {
+const CW_DARK  = "#003366";  // CoreWeave dark blue — closed line
+const CW_LIGHT = "#7eb6ff";  // CoreWeave light blue — total dashed
+
+function TrendChart({ months }) {
   if (!months || months.length === 0) return null;
-  const W=500, H=90, padL=32, padB=20, padT=4, padR=8;
+  const W=560, H=110, padL=38, padB=22, padT=8, padR=12;
   const cW=W-padL-padR, cH=H-padB-padT;
   const maxV = Math.max(...months.map(m=>m.total), 1);
   const pts = months.length;
@@ -112,17 +114,22 @@ function TrendChart({ months, color="#3b82f6" }) {
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display:"block" }}>
-      {[0,.5,1].map((f,i) => (
-        <line key={i} x1={padL} y1={yPx(maxV*f).toFixed(1)} x2={W-padR} y2={yPx(maxV*f).toFixed(1)}
-          stroke="rgba(255,255,255,.06)" strokeWidth=".5"/>
+      {[0,.25,.5,.75,1].map((f,i) => (
+        <g key={i}>
+          <line x1={padL} y1={yPx(maxV*f).toFixed(1)} x2={W-padR} y2={yPx(maxV*f).toFixed(1)}
+            stroke="#e2e8f0" strokeWidth=".7"/>
+          <text x={padL-4} y={parseFloat(yPx(maxV*f).toFixed(1))+3} textAnchor="end" fill="#94a3b8" fontSize="7">
+            {maxV*f >= 1000 ? `${Math.round(maxV*f/1000)}k` : Math.round(maxV*f)}
+          </text>
+        </g>
       ))}
-      {months.map((m,i) => i%(Math.max(1,Math.floor(pts/5)))==0 && (
-        <text key={i} x={xPx(i).toFixed(1)} y={H-4} textAnchor="middle" fill="#94a3b8" fontSize="8">{m.month?.slice(0,7)}</text>
+      {months.map((m,i) => i%(Math.max(1,Math.floor(pts/11)))==0 && (
+        <text key={i} x={xPx(i).toFixed(1)} y={H-4} textAnchor="middle" fill="#64748b" fontSize="7.5">{m.month?.slice(0,7)}</text>
       ))}
-      <polyline points={totalPts} fill="none" stroke={color} strokeWidth="1.5" strokeDasharray="4,3" opacity=".5"/>
-      <polyline points={closedPts} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+      <polyline points={totalPts} fill="none" stroke={CW_LIGHT} strokeWidth="1.5" strokeDasharray="5,3"/>
+      <polyline points={closedPts} fill="none" stroke={CW_DARK} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
       {months.map((m,i) => (
-        <circle key={i} cx={xPx(i).toFixed(1)} cy={yPx(m.closed).toFixed(1)} r="2.5" fill={color}/>
+        <circle key={i} cx={xPx(i).toFixed(1)} cy={yPx(m.closed).toFixed(1)} r="3" fill={CW_DARK}/>
       ))}
     </svg>
   );
@@ -132,29 +139,35 @@ function HeadlineCard({ rank, site, curr, prev, mom_pct, mom_delta }) {
   const arr = momArrow(mom_pct, mom_delta, prev.closed, true);
   const isUp = mom_pct != null && mom_pct > 0;
   return (
-    <div style={{ background:"#ffffff", borderRadius:10, padding:"14px 16px", border:`1px solid ${isUp ? "#22c55e44" : mom_pct < 0 ? "#ef444444" : "#1e293b"}` }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
-        <div>
-          <div style={{ fontSize:10, color:"#94a3b8", marginBottom:4 }}>#{rank} Site</div>
-          <div style={{ fontSize:18, fontWeight:700, color:"#1e293b" }}>{site}</div>
-        </div>
-        <span style={{ fontSize:13, fontWeight:700, color:arr.color }}>{mom_pct != null ? arr.icon : "—"}</span>
+    <div style={{ background:"#003366", borderRadius:12, padding:"16px", border:"1px solid #002244",
+      boxShadow:"0 2px 8px rgba(0,51,102,0.15)" }}>
+      {/* Rank + MoM */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+        <span style={{ fontSize:9, fontWeight:700, color:"#7eb6ff", textTransform:"uppercase", letterSpacing:".08em" }}>#{rank} Site</span>
+        <span style={{ fontSize:11, fontWeight:700, color:isUp?"#4ade80":mom_pct<0?"#f87171":"#94a3b8",
+          background: isUp?"rgba(74,222,128,.15)":mom_pct<0?"rgba(248,113,113,.15)":"rgba(148,163,184,.1)",
+          padding:"2px 8px", borderRadius:4 }}>
+          {mom_pct != null ? arr.icon : "—"}
+        </span>
       </div>
-      <div style={{ marginTop:10, display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
-        <div>
-          <div style={{ fontSize:9, color:"#94a3b8" }}>Closed (this mo.)</div>
-          <div style={{ fontSize:18, fontWeight:700, color:"#22c55e" }}>{curr.closed.toLocaleString()}</div>
+      {/* Site name */}
+      <div style={{ fontSize:22, fontWeight:800, color:"#ffffff", letterSpacing:".02em", marginBottom:12 }}>{site}</div>
+      {/* Stats grid */}
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+        <div style={{ background:"rgba(255,255,255,.08)", borderRadius:8, padding:"8px 10px" }}>
+          <div style={{ fontSize:8, color:"#93c5fd", textTransform:"uppercase", letterSpacing:".06em", marginBottom:2 }}>Closed</div>
+          <div style={{ fontSize:20, fontWeight:700, color:"#ffffff" }}>{curr.closed.toLocaleString()}</div>
         </div>
-        <div>
-          <div style={{ fontSize:9, color:"#94a3b8" }}>Closed (prev mo.)</div>
-          <div style={{ fontSize:18, fontWeight:700, color:"#94a3b8" }}>{prev.closed > 0 ? prev.closed.toLocaleString() : "—"}</div>
+        <div style={{ background:"rgba(255,255,255,.08)", borderRadius:8, padding:"8px 10px" }}>
+          <div style={{ fontSize:8, color:"#93c5fd", textTransform:"uppercase", letterSpacing:".06em", marginBottom:2 }}>Prev Month</div>
+          <div style={{ fontSize:20, fontWeight:700, color:"#bfdbfe" }}>{prev.closed > 0 ? prev.closed.toLocaleString() : "—"}</div>
         </div>
-        <div>
-          <div style={{ fontSize:9, color:"#94a3b8" }}>Open / On Hold</div>
-          <div style={{ fontSize:14, fontWeight:600, color:"#f59e0b" }}>{curr.open} / {curr.on_hold}</div>
+        <div style={{ background:"rgba(255,255,255,.05)", borderRadius:8, padding:"8px 10px" }}>
+          <div style={{ fontSize:8, color:"#93c5fd", textTransform:"uppercase", letterSpacing:".06em", marginBottom:2 }}>Open / Hold</div>
+          <div style={{ fontSize:14, fontWeight:600, color:"#fde68a" }}>{curr.open} / {curr.on_hold}</div>
         </div>
-        <div>
-          <div style={{ fontSize:9, color:"#94a3b8" }}>Avg MTTR</div>
+        <div style={{ background:"rgba(255,255,255,.05)", borderRadius:8, padding:"8px 10px" }}>
+          <div style={{ fontSize:8, color:"#93c5fd", textTransform:"uppercase", letterSpacing:".06em", marginBottom:2 }}>MTTR</div>
           <div style={{ fontSize:14, fontWeight:600, color:"#7dd3fc" }}>{fmtHours(curr.mttr)}</div>
         </div>
       </div>
@@ -186,7 +199,7 @@ export default function MBR2Dashboard() {
       const [sumRes, siteRes, trendRes, stRes] = await Promise.all([
         fetch(`/api/mbr2/summary?${qs}`),
         fetch(`/api/mbr2/sites?${qs}${prev ? `&prev_from=${prev.from}&prev_to=${prev.to}` : ""}`),
-        fetch(`/api/mbr2/trends?months=6&project=${selProject}`),
+        fetch(`/api/mbr2/trends?months=12&project=${selProject}`),
         fetch(`/api/mbr2/status-time?${qs}`),
       ]);
 
@@ -289,13 +302,13 @@ export default function MBR2Dashboard() {
         {trends?.months?.length > 0 && (
           <div style={{ background:"#ffffff", borderRadius:10, padding:"16px", border:"1px solid #e2e8f0", marginBottom:20 }}>
             <div style={{ fontSize:11, fontWeight:700, color:"#64748b", textTransform:"uppercase", letterSpacing:".06em", marginBottom:4 }}>
-              📈 {proj.short} Ticket Volume Trend — Last 6 Months
+              📈 {proj.short} Ticket Volume Trend — Last 12 Months
             </div>
             <div style={{ fontSize:10, color:"#94a3b8", marginBottom:10 }}>
-              Solid line = closed · dashed = total
+              — Closed (CoreWeave dark blue)  · · · Total (light blue)
             </div>
             <div style={{ background:"#f8fafc", borderRadius:8, border:"1px solid #e2e8f0", padding:"12px 8px" }}>
-              <TrendChart months={trends.months} color={col}/>
+              <TrendChart months={trends.months}/>
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))", gap:6, marginTop:10 }}>
               {trends.months.map(m => {
