@@ -1524,6 +1524,8 @@ export default function App() {
   const [trendsLoading,setTrendsLoading]= useState(false);
   const [trendsSite,   setTrendsSite]   = useState("");
   const [openData,     setOpenData]     = useState(null); // { bySite, byAssignee }
+  const [queueSort,    setQueueSort]    = useState("open_total");
+  const [queueDir,     setQueueDir]     = useState("desc");
 
   // Jira fetch state
   const [fetchProgress, setFetchProgress] = useState(null); // { done, total, status }
@@ -2387,31 +2389,60 @@ Jira version: ${d.version || "unknown"}`);
           // visAssignees is derived from `filtered` which applies BOTH site + DCT filters
           // This is the exact same list shown in the heatmap rows above
           const visSet = new Set(visAssignees.filter(a => a !== "Unassigned"));
-          const rows = openData.byAssignee.filter(r =>
-            visSet.has(r.assignee)
-          ).sort((a,b) => b.open_total - a.open_total);
-          if (!rows.length) return null;
+          const baseRows = openData.byAssignee.filter(r => visSet.has(r.assignee));
+          if (!baseRows.length) return null;
+
+          const COLS = [
+            { key:"assignee",           label:"Assignee",      align:"left"   },
+            { key:"closed_30d",         label:"Closed 30d",    align:"center" },
+            { key:"open_total",         label:"Open Total",    align:"center" },
+            { key:"in_progress",        label:"In Progress",   align:"center" },
+            { key:"on_hold",            label:"On Hold",       align:"center" },
+            { key:"pending_verification",label:"Pending/Verif",align:"center" },
+            { key:"avg_open_age_days",  label:"Avg Open Age",  align:"center" },
+          ];
+
+          const sorted = [...baseRows].sort((a,b) => {
+            const va = a[queueSort] ?? (queueSort==="assignee" ? "" : -1);
+            const vb = b[queueSort] ?? (queueSort==="assignee" ? "" : -1);
+            if (typeof va === "string") return queueDir==="asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+            return queueDir==="asc" ? va - vb : vb - va;
+          });
+
+          const onQSort = col => {
+            if (queueSort === col) setQueueDir(d => d==="desc"?"asc":"desc");
+            else { setQueueSort(col); setQueueDir("desc"); }
+          };
+
+          const arrow = col => queueSort===col ? (queueDir==="desc"?" ↓":" ↑") : "";
+
           return (
             <div style={{ ...card(), marginTop:12 }}>
               <div style={{ color:"#e2e8f0", fontWeight:700, fontSize:14, marginBottom:12 }}>
                 📬 Queue Status · By Assignee
                 <span style={{ fontSize:11, color:"#64748b", fontWeight:400, marginLeft:10 }}>
-                  open / on hold / pending verification vs closed (last 30d)
+                  open / on hold / pending verification vs closed (last 30d) · click column to sort
                 </span>
               </div>
               <div style={{ overflowX:"auto" }}>
                 <table style={{ borderCollapse:"collapse", fontSize:10, width:"100%" }}>
                   <thead>
                     <tr style={{ background:"#0f172a" }}>
-                      {["Assignee","Closed 30d","Open Total","In Progress","On Hold","Pending/Verif","Avg Open Age"].map(h=>(
-                        <th key={h} style={{ padding:"7px 10px", textAlign:h==="Assignee"?"left":"center",
-                          color:"#94a3b8", fontWeight:600, borderBottom:"1px solid #334155",
-                          whiteSpace:"nowrap", fontSize:10 }}>{h}</th>
+                      {COLS.map(c=>(
+                        <th key={c.key} onClick={()=>onQSort(c.key)}
+                          style={{ padding:"7px 10px", textAlign:c.align,
+                            color: queueSort===c.key?"#e2e8f0":"#94a3b8",
+                            fontWeight:600, borderBottom:"1px solid #334155",
+                            whiteSpace:"nowrap", fontSize:10, cursor:"pointer",
+                            userSelect:"none",
+                            background: queueSort===c.key?"#1e293b":"transparent" }}>
+                          {c.label}{arrow(c.key)}
+                        </th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map((r,i) => {
+                    {sorted.map((r,i) => {
                       const ageCol = (r.avg_open_age_days||0) > 14 ? "#ef4444" : (r.avg_open_age_days||0) > 7 ? "#f59e0b" : "#22c55e";
                       return (
                         <tr key={r.assignee} style={{ background:i%2===0?"#0f172a":"#111827", borderBottom:"1px solid #1e293b" }}>
