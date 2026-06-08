@@ -1799,7 +1799,6 @@ Jira version: ${d.version || "unknown"}`);
   }, [ticketDerivedSites]);
 
   // ── DCT headcount per site ────────────────────────────────
-  // DCT HC = DCT_LIST members mapped to each site.
   // Primary source: EMPLOYEE_SITES (Assets). 
   // Fallback for unmapped DCTs: ticketDerivedSites (if they resolved tickets, count them).
   const dctHcBySite = useMemo(() => {
@@ -1888,21 +1887,14 @@ Jira version: ${d.version || "unknown"}`);
         case 'Avg/Mo':   va=locTotals[a]||0; vb=locTotals[b]||0; break;
         case 'Roster HC':va=headcount[a]||0; vb=headcount[b]||0; break;
         case 'Active':   va=locAssignees[a]?.size||0; vb=locAssignees[b]?.size||0; break;
-        case 'T/P/W (Roster)': va=parseFloat(tppw[a])||0; vb=parseFloat(tppw[b])||0; break;
         case 'MTTR':     va=mttrBySite[a]?.avgHours??Infinity; vb=mttrBySite[b]?.avgHours??Infinity; break;
-        case 'Suggested HC': {
-          const wA=parseFloat(wkAvg[a])||0, wB=parseFloat(wkAvg[b])||0;
-          va=Math.max(1,Math.ceil(wA/hcTarget)); vb=Math.max(1,Math.ceil(wB/hcTarget)); break;
-        }
-        case 'DCT HC':   va=dctHcBySite[a]||0; vb=dctHcBySite[b]||0; break;
-        case 'DCT Active':va=dctActiveBySite[a]?.size||0; vb=dctActiveBySite[b]?.size||0; break;
+
         case 'Servers':  va=SERVER_COUNTS[a]||0; vb=SERVER_COUNTS[b]||0; break;
-        case 'Srvr/HC':  va=parseFloat(serversByHc[a])||0; vb=parseFloat(serversByHc[b])||0; break;
+
         case 'Gap': {
           const rA=headcount[a]||locAssignees[a]?.size||1;
           const rB=headcount[b]||locAssignees[b]?.size||1;
-          va=Math.max(1,Math.ceil((parseFloat(wkAvg[a])||0)/hcTarget))-rA;
-          vb=Math.max(1,Math.ceil((parseFloat(wkAvg[b])||0)/hcTarget))-rB; break;
+          break;
         }
         default:         va=locTotals[a]||0; vb=locTotals[b]||0;
       }
@@ -2131,63 +2123,14 @@ Jira version: ${d.version || "unknown"}`);
       {/* ── PLANNING TAB ── */}
       {activeTab === "planning" && (<>
 
-        {/* Formula selector */}
-        <div style={card()}>
-          <div style={{ color:"#94a3b8", fontSize:11, fontWeight:600, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:10 }}>Headcount Formula</div>
-          <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom: selectedFormula.id==="custom"?10:0 }}>
-            {HC_FORMULAS.map(f => (
-              <button key={f.id} onClick={()=>setSelectedFormula(f)} style={{
-                flex:1, minWidth:120, textAlign:"left", cursor:"pointer", borderRadius:8, padding:"10px 12px",
-                background:selectedFormula.id===f.id?f.color+"22":"#0f172a",
-                border:`1px solid ${selectedFormula.id===f.id?f.color:"#334155"}`,
-                transition:"all .15s",
-              }}>
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
-                  <span style={{ color:selectedFormula.id===f.id?f.color:"#e2e8f0", fontWeight:600, fontSize:12 }}>{f.label}</span>
-                  <span style={{ background:f.color+"22", color:f.color, fontSize:9, padding:"1px 5px", borderRadius:3, fontWeight:600 }}>{f.badge}</span>
-                </div>
-                {f.tpw && <div style={{ color:"#94a3b8", fontSize:11 }}>{f.tpw} t/p/w · {f.tpd}/day</div>}
-                {!f.tpw && <div style={{ color:"#94a3b8", fontSize:11 }}>set custom target</div>}
-                <div style={{ color:"#475569", fontSize:10, marginTop:3, lineHeight:1.4 }}>{f.desc}</div>
-              </button>
-            ))}
-          </div>
-          {selectedFormula.id === "custom" && (
-            <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:4 }}>
-              <label style={{ color:"#94a3b8", fontSize:12 }}>Target tickets/person/week:</label>
-              <input type="number" min="1" max="100" value={customTarget}
-                onChange={e=>setCustomTarget(e.target.value)}
-                style={{ width:70, background:"#0f172a", border:"1px solid #334155", color:"#e2e8f0", borderRadius:6, padding:"4px 8px", fontSize:13 }}/>
-              <span style={{ color:"#475569", fontSize:11 }}>= {(customTarget/5).toFixed(1)} tickets/person/day</span>
-            </div>
-          )}
-        </div>
-
-        {/* Metric cards */}
-        <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:14 }}>
-          {[
-            ["Tickets (filtered)", filtered.length.toLocaleString(), "#6366f1"],
-            ["Active Sites",       activeLocs.size,                  "#10b981"],
-            ["Active Assignees",   activeAssignees.size,             "#f59e0b"],
-            ["Avg / Week",         (filtered.length/weeks).toFixed(1),"#22d3ee"],
-            ["Period",             PERIOD_OPTIONS.find(p=>p.days===selectedPeriod)?.label||`${selectedPeriod}d`, "#a78bfa"],
-            ["Avg MTTR " + (globalMttr?.slaCount > 0 ? "⚡SLA" : "⏱clk"), globalMttr ? fmtMttr(globalMttr.avgHours) : "—", mttrColor(globalMttr?.avgHours)],
-            ["Total Servers",      Object.values(SERVER_COUNTS).reduce((a,b)=>a+b,0).toLocaleString() || "—", "#6366f1"],
-          ].map(([label,value,color])=>(
-            <div key={label} style={{ background:"#1e293b", border:`1px solid ${color}44`, borderRadius:10, padding:"12px 18px", flex:1, minWidth:110 }}>
-              <div style={{ color:"#94a3b8", fontSize:10, marginBottom:4 }}>{label}</div>
-              <div style={{ color, fontSize:22, fontWeight:700 }}>{value}</div>
-            </div>
-          ))}
-        </div>
 
         {/* Planning table */}
         <div style={card()}>
-          <div style={{ color:"#e2e8f0", fontWeight:700, fontSize:14, marginBottom:12 }}>📍 Workload & Headcount by Site</div>
+          <div style={{ color:"#e2e8f0", fontWeight:700, fontSize:14, marginBottom:12 }}>📍 Ticket Workload by Site</div>
           <div style={{ overflowX:"auto" }}>
             <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
               <thead><tr style={{ background:"#0f172a" }}>
-                {["Site","Total","% Vol","Avg/Day","Avg/Wk","Avg/Mo","Headcount","DCT","T/P/W (Roster)","Servers","Srvr/HC","MTTR","Queue Health","Suggested HC","Gap"].map(h=>(
+                {["Site","Total","% Vol","Avg/Day","Avg/Wk","Avg/Mo","Servers","MTTR","Queue Health"].map(h=>(
                   <th key={h}
                     onClick={()=>{ if(planSortCol===h){setPlanSortDir(d=>d==='desc'?'asc':'desc');}else{setPlanSortCol(h);setPlanSortDir('desc');} }}
                     style={{ padding:"8px 10px", textAlign:"left", color:planSortCol===h?"#e2e8f0":"#94a3b8",
@@ -2205,16 +2148,7 @@ Jira version: ${d.version || "unknown"}`);
                   const avgDay=(total/selectedPeriod).toFixed(1);
                   const avgWk=parseFloat(wkAvg[loc]);
                   const avgMo=(total/(selectedPeriod/30)).toFixed(0);
-                  const rosterHc  = headcount[loc] || 0;        // from Jira Assets — full roster
-                  const dctHc     = dctHcBySite[loc] || 0;          // confirmed DCTs at site (roster)
-                  const dctActive = dctActiveBySite[loc]?.size || 0; // DCTs who resolved tickets this period
-                  const activeHc = locAssignees[loc]?.size || 0;    // unique assignees with tickets this period
-                  const hc = rosterHc || activeHc || 1;
-                  const t = parseFloat(tppw[loc]);                   // already uses roster if available
-                  const tDisplay = t.toFixed(1);
-                  const suggested=Math.max(1,Math.ceil(avgWk/hcTarget));
-                  const gap=suggested-activeHc;  // Gap vs active headcount, not full roster
-                  const tColor=t>hcTarget*1.1?"#ef4444":t>hcTarget*0.8?"#f59e0b":"#10b981";
+
                   const color=locColor(loc);
                   return (
                     <tr key={loc} style={{ background:i%2===0?"#0f172a":"#111827", borderBottom:"1px solid #1e293b" }}>
@@ -2232,35 +2166,9 @@ Jira version: ${d.version || "unknown"}`);
                       <td style={{ padding:"9px 10px" }}><span style={badge("#64748b")}>{avgDay}/d</span></td>
                       <td style={{ padding:"9px 10px" }}><span style={badge("#22d3ee")}>{avgWk}/wk</span></td>
                       <td style={{ padding:"9px 10px" }}><span style={badge("#a78bfa")}>{avgMo}/mo</span></td>
-                      {/* Headcount: all people active in queue */}
-                      <td style={{ padding:"9px 10px" }}>
-                        <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
-                          <span style={badge(color)}>{hc || "—"}</span>
-                          {activeHc > 0 && activeHc < hc && (
-                            <span style={{ fontSize:9, color:"#475569" }}>{activeHc} active</span>
-                          )}
-                        </div>
-                      </td>
-                      {/* DCT: active / total DCT roster */}
-                      <td style={{ padding:"9px 10px" }}>
-                        <div style={{ display:"flex", flexDirection:"column", gap:2 }}>
-                          <span style={badge(dctActive > 0 ? "#10b981" : "#334155")}>
-                            {dctActive}{dctHc > 0 ? ` / ${dctHc}` : ""}
-                          </span>
-                          {dctHc > 0 && dctActive < dctHc && (
-                            <span style={{ fontSize:9, color:"#475569" }}>{dctHc - dctActive} not in queue</span>
-                          )}
-                        </div>
-                      </td>
-                      <td style={{ padding:"9px 10px" }}><span style={badge(tColor)}>{tDisplay}</span></td>
                       <td style={{ padding:"9px 10px" }}>
                         {SERVER_COUNTS[loc]
                           ? <span style={badge("#6366f1")}>{SERVER_COUNTS[loc].toLocaleString()}</span>
-                          : <span style={{ color:"#334155" }}>—</span>}
-                      </td>
-                      <td style={{ padding:"9px 10px" }}>
-                        {serversByHc[loc]
-                          ? <span style={badge("#a78bfa")}>{serversByHc[loc]}</span>
                           : <span style={{ color:"#334155" }}>—</span>}
                       </td>
                       <td style={{ padding:"9px 10px" }}>
@@ -2299,12 +2207,7 @@ Jira version: ${d.version || "unknown"}`);
                           );
                         })()}
                       </td>
-                      <td style={{ padding:"9px 10px", fontWeight:700, fontSize:16, color:gap>0?"#ef4444":"#10b981" }}>{suggested}</td>
-                      <td style={{ padding:"9px 10px" }}>
-                        <span style={{ fontWeight:600, color:gap>0?"#ef4444":gap<0?"#22d3ee":"#10b981", fontSize:12 }}>
-                          {gap>0?`▲ +${gap} needed`:gap<0?`▼ ${Math.abs(gap)} over`:"✓ balanced"}
-                        </span>
-                      </td>
+
                     </tr>
                   );
                 })}
@@ -2313,27 +2216,6 @@ Jira version: ${d.version || "unknown"}`);
           </div>
         </div>
 
-        {/* Formula legend */}
-        <div style={card({ borderColor:selectedFormula.color+"55" })}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", flexWrap:"wrap", gap:8 }}>
-            <div>
-              <div style={{ color:"#e2e8f0", fontWeight:700, fontSize:13, marginBottom:4 }}>
-                📐 Active formula: <span style={{ color:selectedFormula.color }}>{selectedFormula.label}</span>
-              </div>
-              <div style={{ background:"#0f172a", borderRadius:8, padding:"8px 12px", fontFamily:"monospace", fontSize:12, color:"#7dd3fc", display:"inline-block" }}>
-                Required HC = ⌈ Avg Weekly Tickets ÷ {hcTarget} t/p/w ⌉
-              </div>
-              <div style={{ fontSize:11, color:"#64748b", marginTop:6 }}>
-                T/P/W uses <strong style={{color:"#94a3b8"}}>Roster HC</strong> (Jira Assets) as denominator — not just active assignees
-              </div>
-            </div>
-            <div style={{ fontSize:11, color:"#94a3b8", lineHeight:1.8 }}>
-              <div><strong style={{color:"#10b981"}}>Green</strong> — below {Math.round(hcTarget*0.8)} t/p/w (under capacity)</div>
-              <div><strong style={{color:"#f59e0b"}}>Yellow</strong> — {Math.round(hcTarget*0.8)}–{Math.round(hcTarget*1.1)} t/p/w (on target)</div>
-              <div><strong style={{color:"#ef4444"}}>Red</strong> — above {Math.round(hcTarget*1.1)} t/p/w (overstretched)</div>
-            </div>
-          </div>
-        </div>
       </>)}
 
       {/* ── MATRIX TAB ── */}
@@ -2507,11 +2389,9 @@ Jira version: ${d.version || "unknown"}`);
                   {[
                     ["HC (Assets)", headcount[loc]||"—", "#94a3b8"],
                     ["Active", locAssignees[loc]?.size||0, "#64748b"],
-                    ["DCT HC",   dctHcBySite[loc] || "—",              "#f59e0b"],
-                    ["DCT Active",dctActiveBySite[loc]?.size || 0,   "#10b981"],
                     ["Servers", SERVER_COUNTS[loc]?.toLocaleString() || "—", "#6366f1"],
                     ["Srv/HC", serversByHc[loc] || "—", "#a78bfa"],
-                    ["T/P/W", tppw[loc], (() => { const t=parseFloat(tppw[loc]); return t>hcTarget*1.1?"#ef4444":t>hcTarget*0.8?"#f59e0b":"#10b981"; })()],
+
                     ["MTTR", (() => { const m=mttrBySite[loc]; return m ? fmtMttr(m.avgHours) : "—"; })(), (() => { const m=mttrBySite[loc]; return mttrColor(m?.avgHours); })()],
                   ].map(([l,v,c]) => (
                     <div key={l} style={{ background:"#0f172a", borderRadius:5, padding:"5px 8px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
