@@ -69,7 +69,7 @@ const KNOWN_SITES = new Set([
   'US-CMH','US-PHX','US-AUS','US-RIN','US-LBB','US-WJQ','US-SVG','US-MKO',
   'US-HMN','US-NNN','US-QNC','US-RRX','US-LOE','US-AAI','US-LNB','US-CVG',
   'US-MSC','US-LHS','US-PPY','US-SKY','US-NKQ','US-LYF','US-WCI','US-DGV',
-  'US-CLY','US-KWO','US-ABD','US-VO2',
+  'US-CLY','US-KWO','US-ABD','US-VO2','US-ATL','US-CYL',
   'ES-BCN','ES-AVQ','GB-PPL','GB-CWY','NO-OVO','NO-POR','SE-FAN','SE-SKH','DK-SVL',
 ]);
 
@@ -80,7 +80,7 @@ const DC_ALIAS = {
   'phx1':'US-PHX','phx2':'US-PHX',
   'sea1':'US-SPK','sea2':'US-SPK',
   'lax1':'US-CSZ','lax2':'US-CSZ',
-  'atl1':'US-EVI','atl2':'US-EVI',
+  'atl1':'US-ATL','atl2':'US-ATL',
   'iad1':'US-CMH','iad2':'US-CMH',
 };
 
